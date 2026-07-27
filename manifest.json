@@ -1,0 +1,72 @@
+{
+  "id": "com.universaltill.payment-sumup",
+  "name": "SumUp Card Payments",
+  "version": "1.0.0",
+  "description": "Take card payments through SumUp. With a paired SumUp Solo/Air/3G reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert. With no reader configured, it creates a SumUp hosted checkout link instead (test mode: amounts ending .13 decline). Refunding a SumUp sale on the till refunds the original transaction automatically. Set your SumUp API key, merchant code, and (for reader payments) an affiliate key in the settings.",
+  "author": "Universal Till",
+  "website": "https://universaltill.com",
+  "canonical_type": "payment",
+  "runtime": "wasm",
+  "device_arch": "any",
+  "min_pos_version": "1.0.0",
+  "permissions": [
+    "pos.tender",
+    "events:receive",
+    "net:api.sumup.com",
+    "storage"
+  ],
+  "locales": [
+    "en-US"
+  ],
+  "entries": [
+    {
+      "type": "payment",
+      "key": "sumup",
+      "label": "Card (SumUp)",
+      "sort_order": 5,
+      "trigger_event": "payment.sumup.requested"
+    }
+  ],
+  "settings": [
+    {
+      "key": "sumup_api_key",
+      "default_value": "",
+      "scope": "global"
+    },
+    {
+      "key": "sumup_merchant_code",
+      "default_value": "",
+      "scope": "global"
+    },
+    {
+      "key": "sumup_affiliate_key",
+      "default_value": "",
+      "scope": "global"
+    },
+    {
+      "key": "currency",
+      "default_value": "eur",
+      "scope": "global"
+    },
+    {
+      "key": "sumup_reader_id",
+      "default_value": "",
+      "scope": "register"
+    }
+  ],
+  "entrypoint": "./bin/plugin.wasm",
+  "hooks": [
+    {
+      "event": "payment.sumup.authorize",
+      "action": "sumup.authorize"
+    },
+    {
+      "event": "payment.sumup.requested",
+      "action": "sumup.settled"
+    },
+    {
+      "event": "payment.sumup.refund",
+      "action": "sumup.refund"
+    }
+  ]
+}
