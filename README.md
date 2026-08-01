@@ -63,6 +63,41 @@ than staying an empty per-merchant setting forever. Each merchant separately
 creates their own `sumup_api_key` + `sumup_merchant_code` and pairs their own
 reader for `sumup_reader_id`.
 
+## Tips
+
+With a reader configured, **and tipping already enabled in the merchant's
+own SumUp device/profile settings**, a tip the customer picks on the
+reader itself syncs back to the till automatically — no manual re-entry by
+staff. The plugin reads the transaction's `tip_amount` back on the same
+poll used for the approve/decline outcome and reports it on the approve
+response; the till's `completeTender` applies it to the payment even
+though the original tender request carried no tip (there's no other way
+for the till to learn it before the customer interacts with the reader).
+Demo mode (no reader) never reports a tip — there's no real reader
+interaction to read one from.
+
+**Not done**: this plugin's reader-checkout request sends no tipping
+configuration of its own — it relies entirely on tipping already being on
+in the merchant's SumUp profile. If it isn't, the reader simply never
+prompts for a tip and this feature silently does nothing (not an error,
+just a no-op). SumUp's published Cloud API docs had no documented
+per-checkout field to enable tipping at write time; revisit if one turns
+up.
+
+**Needs sandbox verification**: `tip_amount`'s presence/type on the
+Transactions API response wasn't confirmed against a live merchant account
+— assumed to be a decimal major-unit number (matching the Refund endpoint's
+`amount` field), converted to minor units. This is decoded independently
+from the transaction's own id/status (`parseTipAmountMinor`,
+`src/convert.go`) specifically so a wrong guess about `tip_amount`'s shape
+can only ever cost a missed tip — it cannot turn a card the customer
+already successfully tapped into a false decline, and a wrong *type*
+guess (e.g. if the real field turns out to be integer minor units already,
+not a major-unit decimal) would silently apply a tip 100x too large rather
+than failing loudly. Verify both the presence and the units against a real
+merchant account before relying on this in production; until then, treat
+any live tip amount on a receipt as unconfirmed.
+
 ## Endpoints used (confirmed against developer.sumup.com, 2026-07-27)
 
 - `POST /v0.1/merchants/{merchant_code}/readers/{reader_id}/checkout` —
@@ -72,9 +107,9 @@ reader for `sumup_reader_id`.
   live response.
 - `GET /v2.1/merchants/{merchant_code}/transactions?client_transaction_id=…`
   — poll for the reader payment's outcome (`SUCCESSFUL`/`FAILED`/
-  `CANCELLED`). **Needs sandbox verification**: the list response envelope
-  (bare array vs. an `items` wrapper) wasn't confirmed; the plugin handles
-  both defensively.
+  `CANCELLED`) and tip (`tip_amount`, see "Tips" above). **Needs sandbox
+  verification**: the list response envelope (bare array vs. an `items`
+  wrapper) wasn't confirmed; the plugin handles both defensively.
 - `POST /v0.1/me/refund/{txn_id}` — refund, confirmed request/response shape
   including the major-unit decimal `amount` field and the 204-No-Content
   success contract.

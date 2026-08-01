@@ -41,4 +41,35 @@ transactions-list response envelope are both best-effort against SumUp's
 public docs, flagged in code comments and the README. Verify both against a
 real merchant account before a live reader ships.
 
+**2026-08-01 — tip auto-sync (v1.1.0, ut-docs#43):** the reader flow now
+reports a tip back on the approve response's `tip_amount` field (integer
+minor units) — `universal-till`'s `completeTender` reads this and applies it
+to the payment even though the tender request itself carried no tip (the
+customer only picks a tip on the reader, after the till already sent the
+charge amount). Depended on `universal-till`'s core `payments.tip_amount`
+field (already shipped 2026-07-28) and a new response-carrying path on the
+plugin event bus (`EventBus.PublishAuthorize`, added alongside this). The
+transaction's `tip_amount` field/units are a **NEW unverified assumption**,
+same caveat class as the two above — see `pollTransaction`'s doc comment.
+Pure conversion/parsing logic (`minorToMajor`/`majorToMinor`,
+`parseTipAmountMinor`/`parseTransactionPoll`) now lives in `src/convert.go`
+(no `wasip1` build tag) specifically so it has real `go test` coverage —
+everything else in `src/` still has none (see below); this repo's
+"verified against the real host runtime" claims above describe `universal-
+till`-side verification this repo itself has no test file for, which is
+worth closing with an actual harness here, not just relying on the host
+repo's suite — see the follow-up note in this change's review record.
+
+**Independent review caught a real bug before this shipped**: the first
+draft decoded `tip_amount` as a fixed `*float64` on the SAME struct used
+to detect the transaction's own id/status — since `tip_amount`'s shape is
+an unverified guess, a wrong guess (this file's own `total_amount` field a
+few lines up is an *object*, not a bare decimal — an equally plausible
+shape for `tip_amount`) would have failed the whole parse, silently
+discarding a real `SUCCESSFUL` transaction and declining a card the
+customer had already been charged on. Fixed by decoupling tip parsing
+from outcome detection (`json.RawMessage` + a separate, always-degrading
+`parseTipAmountMinor`) — full record:
+`docs/code-reviews/2026-08-01-reader-tip-authorize-response.md`.
+
 Build: `scripts/build.sh`.

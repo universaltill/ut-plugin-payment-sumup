@@ -12,7 +12,12 @@
 //     till can confirm within one blocking call; card-present via a physical
 //     reader is the only real production path). Starts a checkout on the
 //     reader, then polls the Transactions API for a terminal status, same
-//     shape as the Stripe plugin's reader-polling loop.
+//     shape as the Stripe plugin's reader-polling loop. A tip the customer
+//     selects on the reader itself comes back on that same poll; this
+//     plugin reports it on the approve response's `tip_amount` field
+//     (integer minor units) so the till can apply it to the payment even
+//     though the original tender request carried no tip — see
+//     README "Tips" for the caveat on this field's shape.
 //   - DEMO (no reader configured): deterministic outcomes, no real API call
 //     — same "amount ends .13 declines / .99 times out / else approves"
 //     contract as ut-plugin-payment-demo. Not a real payment path (see
@@ -144,12 +149,33 @@ const (
 )
 
 func approve(amount int64, currency, authCode string) {
-	result, _ := json.Marshal(map[string]any{
+	approveWithTip(amount, currency, authCode, 0)
+}
+
+// approveWithTip is approve, but also reports a tip the reader captured
+// from the customer (integer minor units, same convention as universal-till's
+// own `tip` tender field). universal-till's completeTender reads this back
+// off the authorize response and applies it to the payment — the customer
+// only picks a tip on the reader itself, after the till already sent the
+// charge amount, so there is no other way for the till to learn it.
+// tipAmount is omitted from the JSON entirely when zero, so every other
+// approve() caller (demo mode, refunds — neither has a real tip to report)
+// is byte-for-byte unaffected.
+func approveWithTip(amount int64, currency, authCode string, tipAmount int64) {
+	fields := map[string]any{
 		"provider": "sumup", "amount": amount, "currency": currency,
 		"outcome": "approved", "auth_code": authCode,
-	})
+	}
+	if tipAmount > 0 {
+		fields["tip_amount"] = tipAmount
+	}
+	result, _ := json.Marshal(fields)
 	saveTxn(result)
-	logf("sumup: APPROVED %d %s (%s)", amount, currency, authCode)
+	if tipAmount > 0 {
+		logf("sumup: APPROVED %d %s (%s), tip %d", amount, currency, authCode, tipAmount)
+	} else {
+		logf("sumup: APPROVED %d %s (%s)", amount, currency, authCode)
+	}
 	_, _ = os.Stdout.Write(append(result, '\n'))
 	os.Exit(approvedExit)
 }
@@ -172,16 +198,6 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-// minorToMajor renders integer minor units as a decimal major-unit number
-// for SumUp's Checkouts/Refund APIs (unlike the Reader Cloud API, these use
-// major units — e.g. 1050 minor -> 10.50). Assumes a 2-decimal currency
-// (true for EUR/GBP/USD, the only currencies this plugin targets today); a
-// 0-decimal currency (CLP/COP/HUF) would need a currency-aware divisor if
-// this plugin ever needs to support one.
-func minorToMajor(amount int64) float64 {
-	return float64(amount) / 100.0
 }
 
 func main() {
@@ -280,6 +296,16 @@ func main() {
 // the affiliate section") but was not confirmed against a live sandbox
 // response — verify this shape against a real SumUp merchant account before
 // relying on it in production.
+//
+// NOT DONE: this request sends no tipping configuration at all, so whether
+// the reader actually prompts the customer for a tip depends entirely on
+// tipping already being enabled in the merchant's own SumUp device/profile
+// settings — this plugin does not (and, per SumUp's published Cloud API
+// docs at write time, has no documented per-checkout field to) turn
+// tipping on. If the reader was never configured to prompt, pollTransaction
+// will simply never see a tip_amount and this feature silently does
+// nothing, which is a real gap, not covered by the "Needs sandbox
+// verification" caveat above — see README "Tips".
 func readerCharge(apiKey, affiliateKey, merchantCode, currency, readerID string, amount int64) {
 	if affiliateKey == "" {
 		decline(amount, currency, "no_affiliate_key")
@@ -311,10 +337,10 @@ func readerCharge(apiKey, affiliateKey, merchantCode, currency, readerID string,
 		decline(amount, currency, firstNonEmpty(checkout.Message, "reader_start_failed"))
 	}
 
-	txnID, outcome := pollTransaction(apiKey, merchantCode, clientTxnID)
+	txnID, outcome, tipAmount := pollTransaction(apiKey, merchantCode, clientTxnID)
 	switch outcome {
 	case "SUCCESSFUL":
-		approve(amount, currency, txnID)
+		approveWithTip(amount, currency, txnID, tipAmount)
 	case "FAILED", "CANCELLED":
 		decline(amount, currency, strings.ToLower(outcome))
 	default:
@@ -322,45 +348,39 @@ func readerCharge(apiKey, affiliateKey, merchantCode, currency, readerID string,
 	}
 }
 
-// pollTransaction looks up a reader checkout's outcome by its
-// client_transaction_id. SumUp's Cloud API delivers the real outcome via
-// webhook/return_url; there is no dedicated single-transaction lookup-by-id
-// endpoint, so — like the Stripe plugin's PaymentIntent poll — this polls
-// the Transactions list endpoint filtered by client_transaction_id once a
-// second. The list envelope shape (bare array vs an "items" wrapper) wasn't
-// confirmed against a live sandbox response, so both are handled here.
-func pollTransaction(apiKey, merchantCode, clientTxnID string) (txnID, status string) {
-	type txn struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
+// pollTransaction looks up a reader checkout's outcome, and any tip the
+// customer selected on the reader, by client_transaction_id. SumUp's Cloud
+// API delivers the real outcome via webhook/return_url; there is no
+// dedicated single-transaction lookup-by-id endpoint, so — like the Stripe
+// plugin's PaymentIntent poll — this polls the Transactions list endpoint
+// filtered by client_transaction_id once a second. The list envelope shape
+// (bare array vs an "items" wrapper) wasn't confirmed against a live sandbox
+// response, so both are handled here.
+//
+// NEEDS SANDBOX VERIFICATION: tip_amount's exact presence/type in this
+// endpoint's response wasn't confirmed against a live merchant account —
+// assumed to be a decimal major-unit number (matching this API family's
+// other amount fields, e.g. the Refund endpoint's `amount`), converted to
+// minor units via majorToMinor. Deliberately decoded as json.RawMessage
+// (never a fixed Go type) on the txn struct below: this field's shape is a
+// GUESS, and a wrong guess must never break parsing THIS transaction's own
+// id/status — that would turn a card the customer already successfully
+// tapped into a false "reader_timeout" decline. parseTipAmountMinor (see
+// convert.go) is where the guess is actually interpreted, independently,
+// and it degrades to "no tip reported" for anything it doesn't recognize
+// rather than erroring.
+func pollTransaction(apiKey, merchantCode, clientTxnID string) (txnID, status string, tipAmount int64) {
 	path := fmt.Sprintf("/v2.1/merchants/%s/transactions?client_transaction_id=%s", merchantCode, clientTxnID)
 	for i := 0; i < 60; i++ {
-		body, status, ok := sumupCall("GET", path, apiKey, nil)
-		if ok && status >= 200 && status < 300 {
-			var wrapped struct {
-				Items []txn `json:"items"`
-			}
-			var bare []txn
-			var one txn
-			var found *txn
-			if err := json.Unmarshal(body, &wrapped); err == nil && len(wrapped.Items) > 0 {
-				found = &wrapped.Items[0]
-			} else if err := json.Unmarshal(body, &bare); err == nil && len(bare) > 0 {
-				found = &bare[0]
-			} else if err := json.Unmarshal(body, &one); err == nil && one.ID != "" {
-				found = &one
-			}
-			if found != nil {
-				switch found.Status {
-				case "SUCCESSFUL", "FAILED", "CANCELLED":
-					return found.ID, found.Status
-				}
+		body, code, ok := sumupCall("GET", path, apiKey, nil)
+		if ok && code >= 200 && code < 300 {
+			if id, st, tip, found := parseTransactionPoll(body); found {
+				return id, st, tip
 			}
 		}
 		time.Sleep(time.Second)
 	}
-	return "", "TIMEOUT"
+	return "", "TIMEOUT", 0
 }
 
 // refundTxn refunds (part of) the original sale's transaction. The
