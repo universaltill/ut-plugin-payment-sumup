@@ -63,7 +63,12 @@ jobs:
           artifact="dist/${id}_${version}_universal.tar.gz"
           [ -f "$artifact" ] || { echo "ERROR: expected artifact not found: $artifact" >&2; ls -la dist/ >&2; exit 1; }
           cp "$artifact" dist/latest.tar.gz
-          cp "${artifact}.sha256" dist/latest.tar.gz.sha256
+          # Regenerate the checksum against the renamed file — a straight
+          # `cp` of the versioned artifact's .sha256 keeps the OLD filename
+          # inside the file, so `sha256sum -c latest.tar.gz.sha256` fails
+          # for self-hosters who download both from releases/latest/*
+          # (ut-docs#166).
+          (cd dist && sha256sum latest.tar.gz > latest.tar.gz.sha256)
           gh release create "${GITHUB_REF_NAME}" \
             "$artifact" "${artifact}.sha256" dist/latest.tar.gz dist/latest.tar.gz.sha256 \
             --title "${id} ${version}" \
@@ -93,5 +98,10 @@ jobs:
         if: (github.event_name == 'push' || inputs.publish) && vars.AUTO_APPROVE == 'true'
         env:
           MARKETPLACE_BASE_URL: ${{ secrets.MARKETPLACE_BASE_URL }}
+          # Client-side prep only (ut-docs#166) — ut-cloud doesn't accept a
+          # distinct admin credential yet (ut-docs#496), so leave this repo
+          # secret UNSET for now; scripts/approve.sh falls back to
+          # MARKETPLACE_UPLOAD_TOKEN with no behavior change.
+          MARKETPLACE_ADMIN_TOKEN: ${{ secrets.MARKETPLACE_ADMIN_TOKEN }}
           MARKETPLACE_UPLOAD_TOKEN: ${{ secrets.MARKETPLACE_UPLOAD_TOKEN }}
         run: scripts/approve.sh
