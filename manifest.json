@@ -1,7 +1,7 @@
 {
   "id": "com.universaltill.payment-sumup",
   "name": "SumUp Card Payments",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Take card payments through SumUp. With a paired SumUp Solo/Air/3G reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert, and a tip the customer picks on the reader syncs back to the till automatically. With no reader configured, it creates a SumUp hosted checkout link instead (test mode: amounts ending .13 decline). Refunding a SumUp sale on the till refunds the original transaction automatically. Set your SumUp API key, merchant code, and (for reader payments) an affiliate key in the settings.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
@@ -31,7 +31,8 @@
     {
       "key": "sumup_api_key",
       "default_value": "",
-      "scope": "global"
+      "scope": "global",
+      "type": "secret"
     },
     {
       "key": "sumup_merchant_code",
@@ -41,7 +42,8 @@
     {
       "key": "sumup_affiliate_key",
       "default_value": "",
-      "scope": "global"
+      "scope": "global",
+      "type": "secret"
     },
     {
       "key": "currency",
