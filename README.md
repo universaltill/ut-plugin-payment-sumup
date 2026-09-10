@@ -63,6 +63,35 @@ than staying an empty per-merchant setting forever. Each merchant separately
 creates their own `sumup_api_key` + `sumup_merchant_code` and pairs their own
 reader for `sumup_reader_id`.
 
+## Localization (ut-docs#1883, scoping note)
+
+This plugin ships **no `locales/*.json`** as of this note, despite
+ut-docs#1883 asking for `de` strings here alongside `ut-plugin-tax-de`'s.
+Investigated and found genuinely blocked, not skipped: the plugin's only
+UI-facing string is its `payment` entry's `label` ("Card (SumUp)"), and core
+copies that verbatim into the `payment_methods.name` DB column at
+install/sync time (`SyncPluginPaymentMethods`) — the Pay-tab tender buttons
+(`web/ui/pages/index.html`) then render `.Name` raw, with no call to `T`
+anywhere in that path. Unlike the `export`-entry picker in
+`ut-plugin-tax-de` (ut-docs#1883's other half, fixed with a small template
+change), there is no render-time `T` call here to hook a locale-key
+convention into — the string is baked into a DB row at sync time, once, for
+every payment plugin in the ecosystem, not just this one. Shipping a
+`locales/de.json` mapping a key this plugin's manifest doesn't use would be
+inert: nothing would ever look it up. Fixing this needs a cross-cutting
+core change (resolve the payment method's display name through the
+translator at render time, or re-sync it whenever the locale changes) that
+affects every payment plugin, not a per-plugin locale file — tracked as its
+own follow-up rather than attempted piecemeal here. `scripts/guard-plugin-i18n.sh`
+is still wired into this repo's CI (ut-docs#1882) and passes cleanly with no
+`locales/` directory. `scripts/package.sh` was also updated in this same
+change (ut-docs#1883 review, F1 — found in `ut-plugin-tax-de`'s sibling
+change: its `package.sh` shipped a real German-pilot regression by omitting
+`locales/` from the release artifact) to include `locales/` in the packaged
+archive whenever the directory exists, so this repo is ready to adopt the
+convention the moment core's render path exists, with no packaging gap
+waiting to bite on day one.
+
 ## Tips
 
 With a reader configured, **and tipping already enabled in the merchant's

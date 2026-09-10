@@ -16,6 +16,14 @@ mkdir -p dist
 
 entries=(manifest.json README.md bin)
 [ -f LICENSE ] && entries+=(LICENSE)
+# ut-docs#1883 review (F1, found in ut-plugin-tax-de, fixed here pre-emptively
+# since this repo shares the same package.sh template): locales/*.json is
+# how a plugin's manifest labels actually get translated
+# (architecture/plugin-architecture.md §7) — omitting it here would ship a
+# key-shaped label as raw untranslated text the moment this plugin adopts
+# the convention, since syncLocales() reads locales/ from the INSTALLED
+# bundle, not from this repo checkout.
+[ -d locales ] && entries+=(locales)
 # COPYFILE_DISABLE stops macOS tar shipping AppleDouble ._* junk (the
 # marketplace bundle-hygiene gate rejects it).
 COPYFILE_DISABLE=1 tar -czf "$OUT" "${entries[@]}"
