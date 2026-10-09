@@ -262,13 +262,10 @@ func main() {
 	// (see package doc comment) — deterministic outcome, no network call,
 	// same contract as ut-plugin-payment-demo.
 	if readerID == "" {
-		switch amount % 100 {
-		case 13:
-			decline(amount, currency, "demo_declined")
-		case 99:
-			decline(amount, currency, "demo_timeout")
-		default:
-			approve(amount, currency, "demo-"+fmt.Sprintf("%d", amount))
+		if ok, code := demoAuthorize(amount); ok {
+			approve(amount, currency, code)
+		} else {
+			decline(amount, currency, code)
 		}
 		return
 	}
