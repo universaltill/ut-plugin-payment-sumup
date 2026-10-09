@@ -54,7 +54,10 @@ same caveat class as the two above — see `pollTransaction`'s doc comment.
 Pure conversion/parsing logic (`minorToMajor`/`majorToMinor`,
 `parseTipAmountMinor`/`parseTransactionPoll`) now lives in `src/convert.go`
 (no `wasip1` build tag) specifically so it has real `go test` coverage —
-everything else in `src/` still has none (see below); this repo's
+as does the no-reader test-mode decision, `demoAuthorize` in `src/demo.go`
+(ut-docs#3057; `demo_test.go` also keeps manifest.json's description honest
+about it). CI runs `go test ./...` since then. Everything else in `src/`
+still has none (see below); this repo's
 "verified against the real host runtime" claims above describe `universal-
 till`-side verification this repo itself has no test file for, which is
 worth closing with an actual harness here, not just relying on the host
