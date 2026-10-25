@@ -1,0 +1,20 @@
+{
+  "payment_sumup.currency.label": "Kart ödemesi para birimi",
+  "payment_sumup.currency.help": "SumUp'ın tahsilat yaptığı para birimi. Otomatik, mağazanızın para birimini kullanır. Elle yapılan seçim kasanın satış yaptığı para birimiyle aynı olmalıdır; aksi halde kartla ödeme yanlış para biriminde tahsil edilmek yerine reddedilir.",
+  "payment_sumup.currency.opt.auto": "Otomatik (mağazanın para birimini kullan)",
+  "payment_sumup.currency.opt.aud": "A$ AUD – Avustralya doları",
+  "payment_sumup.currency.opt.brl": "R$ BRL – Brezilya reali",
+  "payment_sumup.currency.opt.cad": "C$ CAD – Kanada doları",
+  "payment_sumup.currency.opt.chf": "CHF – İsviçre frangı",
+  "payment_sumup.currency.opt.czk": "Kč CZK – Çek korunası",
+  "payment_sumup.currency.opt.dkk": "kr DKK – Danimarka kronu",
+  "payment_sumup.currency.opt.eur": "€ EUR – Euro",
+  "payment_sumup.currency.opt.gbp": "£ GBP – İngiliz sterlini",
+  "payment_sumup.currency.opt.mxn": "MX$ MXN – Meksika pesosu",
+  "payment_sumup.currency.opt.nok": "kr NOK – Norveç kronu",
+  "payment_sumup.currency.opt.pen": "S/ PEN – Peru solu",
+  "payment_sumup.currency.opt.pln": "zł PLN – Polonya zlotisi",
+  "payment_sumup.currency.opt.ron": "lei RON – Romen leyi",
+  "payment_sumup.currency.opt.sek": "kr SEK – İsveç kronu",
+  "payment_sumup.currency.opt.usd": "$ USD – ABD doları"
+}

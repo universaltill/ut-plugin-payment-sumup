@@ -75,4 +75,12 @@ from outcome detection (`json.RawMessage` + a separate, always-degrading
 `parseTipAmountMinor`) — full record:
 `docs/code-reviews/2026-08-01-reader-tip-authorize-response.md`.
 
+**2026-10-25 — selectable currency (v1.2.0, ut-docs#5029):** `currency` is a
+`choice` setting (default `auto`); `src/currency.go` (untagged, tested)
+resolves saved choice > sale currency > `shop.context.v2` shop currency,
+and declines `currency_mismatch` / `currency_unknown` / `unsupported_*` rather
+than charge a guessed or wrong currency (the authorize event carries no
+currency today). 0-decimal CLP/COP/HUF excluded on purpose (README
+"Currencies"). Needs `view:shop` + `views_used`, `min_pos_version` 0.31.9.
+
 Build: `scripts/build.sh`.

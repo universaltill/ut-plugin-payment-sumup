@@ -1,0 +1,20 @@
+{
+  "payment_sumup.currency.label": "Währung der Kartenzahlung",
+  "payment_sumup.currency.help": "Die Währung, in der SumUp abbucht. Automatisch verwendet die Währung Ihres Geschäfts. Eine manuelle Auswahl muss der Verkaufswährung der Kasse entsprechen, sonst wird die Kartenzahlung abgelehnt, statt in der falschen Währung belastet zu werden.",
+  "payment_sumup.currency.opt.auto": "Automatisch (Währung des Geschäfts verwenden)",
+  "payment_sumup.currency.opt.aud": "A$ AUD – Australischer Dollar",
+  "payment_sumup.currency.opt.brl": "R$ BRL – Brasilianischer Real",
+  "payment_sumup.currency.opt.cad": "C$ CAD – Kanadischer Dollar",
+  "payment_sumup.currency.opt.chf": "CHF – Schweizer Franken",
+  "payment_sumup.currency.opt.czk": "Kč CZK – Tschechische Krone",
+  "payment_sumup.currency.opt.dkk": "kr DKK – Dänische Krone",
+  "payment_sumup.currency.opt.eur": "€ EUR – Euro",
+  "payment_sumup.currency.opt.gbp": "£ GBP – Pfund Sterling",
+  "payment_sumup.currency.opt.mxn": "MX$ MXN – Mexikanischer Peso",
+  "payment_sumup.currency.opt.nok": "kr NOK – Norwegische Krone",
+  "payment_sumup.currency.opt.pen": "S/ PEN – Peruanischer Sol",
+  "payment_sumup.currency.opt.pln": "zł PLN – Polnischer Złoty",
+  "payment_sumup.currency.opt.ron": "lei RON – Rumänischer Leu",
+  "payment_sumup.currency.opt.sek": "kr SEK – Schwedische Krone",
+  "payment_sumup.currency.opt.usd": "$ USD – US-Dollar"
+}
