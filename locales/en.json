@@ -1,0 +1,20 @@
+{
+  "payment_sumup.currency.label": "Card payment currency",
+  "payment_sumup.currency.help": "The currency SumUp charges in. Automatic uses your shop's currency. A manual choice must match the currency the till sells in, otherwise card payments are declined rather than charged in the wrong currency.",
+  "payment_sumup.currency.opt.auto": "Automatic (use the shop's currency)",
+  "payment_sumup.currency.opt.aud": "A$ AUD – Australian dollar",
+  "payment_sumup.currency.opt.brl": "R$ BRL – Brazilian real",
+  "payment_sumup.currency.opt.cad": "C$ CAD – Canadian dollar",
+  "payment_sumup.currency.opt.chf": "CHF – Swiss franc",
+  "payment_sumup.currency.opt.czk": "Kč CZK – Czech koruna",
+  "payment_sumup.currency.opt.dkk": "kr DKK – Danish krone",
+  "payment_sumup.currency.opt.eur": "€ EUR – euro",
+  "payment_sumup.currency.opt.gbp": "£ GBP – Pound sterling",
+  "payment_sumup.currency.opt.mxn": "MX$ MXN – Mexican peso",
+  "payment_sumup.currency.opt.nok": "kr NOK – Norwegian krone",
+  "payment_sumup.currency.opt.pen": "S/ PEN – Peruvian sol",
+  "payment_sumup.currency.opt.pln": "zł PLN – Polish zloty",
+  "payment_sumup.currency.opt.ron": "lei RON – Romanian leu",
+  "payment_sumup.currency.opt.sek": "kr SEK – Swedish krona",
+  "payment_sumup.currency.opt.usd": "$ USD – US dollar"
+}

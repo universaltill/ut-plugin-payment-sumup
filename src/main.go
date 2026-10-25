@@ -27,7 +27,8 @@
 // Config (plugin settings): `sumup_api_key` (merchant's own SumUp API key,
 // created in the SumUp developer portal), `sumup_merchant_code`,
 // `sumup_affiliate_key` (Universal Till's integrator key — see README),
-// `currency` (ISO, default eur), and optional `sumup_reader_id` (paired
+// `currency` (a picker; default "auto" = the shop's currency, never a
+// silent eur for a UK shop), and optional `sumup_reader_id` (paired
 // reader id, register-scoped).
 package main
 
@@ -47,6 +48,9 @@ func logWrite(ptr, n uint32)
 
 //go:wasmimport ut settings_get
 func settingsGet(kPtr, kLen, dstPtr, dstCap uint32) int32
+
+//go:wasmimport ut view_query
+func viewQuery(nPtr, nLen, aPtr, aLen, dstPtr, dstCap uint32) int32
 
 //go:wasmimport ut http_request
 func httpRequest(rPtr, rLen, dstPtr, dstCap uint32) int32
@@ -91,6 +95,29 @@ func setting(key string) string {
 		}
 	}
 	return string(buf[:n])
+}
+
+// shopContext reads the shop's currency from the core view shop.context.v2
+// (view:shop). Known is false when the view is unavailable (permission not
+// granted, older till, ...): the caller then falls back, never guesses.
+func shopContext() shopInfo {
+	np, nl := ptrOf([]byte("shop.context.v2"))
+	ap, al := ptrOf([]byte("{}"))
+	buf := make([]byte, 8192)
+	bp, bc := ptrOf(buf)
+	n := viewQuery(np, nl, ap, al, bp, bc)
+	if n >= 0 && int(n) > len(buf) {
+		// Longer than the buffer: views are read-only, so re-query once
+		// with the full length (same contract as setting()).
+		buf = make([]byte, n)
+		bp, bc = ptrOf(buf)
+		n = viewQuery(np, nl, ap, al, bp, bc)
+	}
+	if n < 0 || int(n) > len(buf) {
+		return shopInfo{}
+	}
+	code, dec, ok := parseShopContext(buf[:n])
+	return shopInfo{Code: code, Decimals: dec, Known: ok}
 }
 
 func storagePut(key string, v []byte) {
@@ -228,12 +255,22 @@ func main() {
 		os.Exit(0)
 	}
 
-	currency := strings.TrimSpace(setting("currency"))
-	if currency == "" {
-		currency = "eur"
-	}
-
 	readerID := strings.TrimSpace(setting("sumup_reader_id"))
+
+	// Currency: the saved choice (default "auto" = the shop's own currency
+	// via shop.context.v2), checked against the sale's currency. In test
+	// mode nothing is charged, so a failed check only falls back for
+	// display; with a reader (a real charge) or a real refund it declines
+	// rather than charge/refund in the wrong currency.
+	savedCurrency := setting("currency")
+	shop := shopContext()
+	currency, currencyDecline := resolveCurrency(savedCurrency, ev.Payload.Currency, shop)
+	if currencyDecline != "" {
+		if readerID != "" {
+			decline(amount, declinedCurrency(savedCurrency, ev.Payload.Currency, shop), currencyDecline)
+		}
+		currency = fallbackCurrency
+	}
 
 	// Provider refund (blocking, pre-return): send the money back on the
 	// original transaction. Handled BEFORE the demo/reader authorize

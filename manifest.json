@@ -1,22 +1,25 @@
 {
   "id": "com.universaltill.payment-sumup",
   "name": "SumUp Card Payments",
-  "version": "1.1.2",
-  "description": "Take card payments through SumUp. With a paired SumUp Solo/Air/3G reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert, and a tip the customer picks on the reader syncs back to the till automatically. With no reader configured it runs in test mode: no card is charged and nothing is sent to SumUp (amounts ending .13 decline, .99 time out, anything else approves). Refunding a SumUp reader sale on the till refunds the original transaction automatically (in test mode a refund is approved with nothing to send back). Set your SumUp API key, merchant code, and (for reader payments) an affiliate key in the settings.",
+  "version": "1.2.0",
+  "description": "Take card payments through SumUp. With a paired SumUp Solo/Air/3G reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert, and a tip the customer picks on the reader syncs back to the till automatically. With no reader configured it runs in test mode: no card is charged and nothing is sent to SumUp (amounts ending .13 decline, .99 time out, anything else approves). Refunding a SumUp reader sale on the till refunds the original transaction automatically (in test mode a refund is approved with nothing to send back). Cards are charged in your shop's currency; the currency setting can pin it, and a choice that does not match the till's currency is declined rather than charged. Set your SumUp API key, merchant code, and (for reader payments) an affiliate key in the settings.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
   "canonical_type": "payment",
   "runtime": "wasm",
   "device_arch": "any",
-  "min_pos_version": "1.0.0",
+  "min_pos_version": "0.31.9",
   "permissions": [
     "pos.tender",
     "events:receive",
+    "view:shop",
     "net:api.sumup.com",
     "storage"
   ],
   "locales": [
-    "en-US"
+    "en-US",
+    "de-DE",
+    "tr-TR"
   ],
   "entries": [
     {
@@ -47,8 +50,77 @@
     },
     {
       "key": "currency",
-      "default_value": "eur",
-      "scope": "global"
+      "default_value": "auto",
+      "scope": "global",
+      "label": "payment_sumup.currency.label",
+      "type": "choice",
+      "help": "payment_sumup.currency.help",
+      "options": [
+        {
+          "value": "auto",
+          "label": "payment_sumup.currency.opt.auto"
+        },
+        {
+          "value": "aud",
+          "label": "payment_sumup.currency.opt.aud"
+        },
+        {
+          "value": "brl",
+          "label": "payment_sumup.currency.opt.brl"
+        },
+        {
+          "value": "cad",
+          "label": "payment_sumup.currency.opt.cad"
+        },
+        {
+          "value": "chf",
+          "label": "payment_sumup.currency.opt.chf"
+        },
+        {
+          "value": "czk",
+          "label": "payment_sumup.currency.opt.czk"
+        },
+        {
+          "value": "dkk",
+          "label": "payment_sumup.currency.opt.dkk"
+        },
+        {
+          "value": "eur",
+          "label": "payment_sumup.currency.opt.eur"
+        },
+        {
+          "value": "gbp",
+          "label": "payment_sumup.currency.opt.gbp"
+        },
+        {
+          "value": "mxn",
+          "label": "payment_sumup.currency.opt.mxn"
+        },
+        {
+          "value": "nok",
+          "label": "payment_sumup.currency.opt.nok"
+        },
+        {
+          "value": "pen",
+          "label": "payment_sumup.currency.opt.pen"
+        },
+        {
+          "value": "pln",
+          "label": "payment_sumup.currency.opt.pln"
+        },
+        {
+          "value": "ron",
+          "label": "payment_sumup.currency.opt.ron"
+        },
+        {
+          "value": "sek",
+          "label": "payment_sumup.currency.opt.sek"
+        },
+        {
+          "value": "usd",
+          "label": "payment_sumup.currency.opt.usd"
+        }
+      ]
     },
     {
       "key": "sumup_reader_id",
@@ -70,5 +142,8 @@
       "event": "payment.sumup.refund",
       "action": "sumup.refund"
     }
+  ],
+  "views_used": [
+    "shop.context.v2"
   ]
 }

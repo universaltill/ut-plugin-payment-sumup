@@ -39,10 +39,57 @@ real ones:
 - `sumup_affiliate_key` — Universal Till's own integrator/affiliate key
   (**not** merchant-specific — see "What's still manual" below). Required
   for the reader flow only.
-- `currency` — ISO code (default `eur` — this plugin's first real target is
-  a German prospect, see `ut-docs` memory `prospect-german-shop-migration`).
+- `currency` — a picker (symbol + code + name; labels in EN/DE/TR). Default
+  **Automatic**: the shop's own currency, read from the till through the core
+  read view `shop.context.v2` (`view:shop` permission; the manifest asks for
+  till 0.31.9+, the first release known to carry both the picker and the
+  view). An explicit pick wins, but it must equal the sale's currency (see
+  "Currencies"). Installs that saved the old free-text default `eur` keep
+  that value: in a non-EUR shop they are now declined with
+  `currency_mismatch` instead of silently charged in euros (switch the
+  setting to Automatic) - but only while the view is readable; if the
+  operator denies `view:shop` the old explicit `eur` is used as before.
 - `sumup_reader_id` (register-scoped) — the paired reader this specific till
   drives. Leave unset for demo mode.
+
+## Currencies
+
+- Offered: AUD, BRL, CAD, CHF, CZK, DKK, EUR, GBP, MXN, NOK, PEN, PLN, RON,
+  SEK, USD — the currencies of SumUp's merchant markets per
+  developer.sumup.com "Countries and Currencies" (checked 2026-10-25). SumUp
+  publishes no separate list for the Reader/Tap to Pay API; its Reader
+  Checkout docs accept any ISO 4217 code with an explicit `minor_unit`.
+- **Zero-decimal currencies (CLP, COP, HUF) are deliberately excluded**, and a
+  shop whose till currency is one of them (or any currency not 2-decimal) is
+  declined (`unsupported_currency` / `unsupported_decimals`). SumUp documents
+  `minor_unit` 0 for those three; supporting them needs a currency-aware
+  divisor in `minorToMajor` (refunds use major units), the reader request and
+  the tip parser, plus agreement with the till's own decimals for them, none
+  of which can be verified without a live SumUp sandbox. Money-critical, so
+  not guessed; a later card can add them with tests.
+- **Mismatch guard:** the charge currency must equal the sale's own currency.
+  The till's `payment.sumup.authorize` event carries **no currency today**
+  (only method, amount, reference; the refund event does carry one), so on a
+  charge the sale currency is the shop's currency from `shop.context.v2`;
+  when the host starts sending `currency` it takes precedence automatically.
+  A mismatch is declined with `currency_mismatch` - amounts are minor units
+  of the sale currency, so charging another would bill the wrong money.
+  Applies to reader charges and reader-sale refunds; test mode charges
+  nothing.
+- **Fail closed:** with Automatic selected and neither the event nor the
+  view telling the plugin the currency (`view:shop` not granted, view
+  unavailable), a reader charge is declined with `currency_unknown` rather
+  than guessed as euros. Test mode (no reader) only displays `eur`.
+- Refunds: SumUp refunds in the original transaction's currency by amount;
+  a sale charged in euros by the old default can only be refunded after the
+  setting is switched to Automatic (the check needs the setting to match the
+  sale's currency).
+- AUD, CAD, MXN and PEN are offered on SumUp's merchant-market evidence only:
+  SumUp's online Checkouts enum lacks them (it lists BRL CHF CLP COP CZK DKK
+  EUR GBP HRK HUF NOK PLN RON SEK USD) and the Reader API publishes no list,
+  so they fall under this README's "needs live sandbox verification" caveat.
+- Decline codes: `currency_mismatch`, `currency_unknown`,
+  `unsupported_currency`, `unsupported_decimals`.
 
 ## Refunds
 
@@ -65,9 +112,13 @@ reader for `sumup_reader_id`.
 
 ## Localization (ut-docs#1883, scoping note)
 
-This plugin ships **no `locales/*.json`** as of this note, despite
-ut-docs#1883 asking for `de` strings here alongside `ut-plugin-tax-de`'s.
-Investigated and found genuinely blocked, not skipped: the plugin's only
+As of v1.2.0 the plugin ships `locales/{en,de,tr}.json` for the currency
+setting's label, help and option labels (the settings page resolves them).
+The payment entry's own label ("Card (SumUp)") is still not translated, for
+the reason below.
+
+History (ut-docs#1883 note, before v1.2.0): this plugin shipped **no
+`locales/*.json`**. Investigated and found genuinely blocked, not skipped: the plugin's only
 UI-facing string is its `payment` entry's `label` ("Card (SumUp)"), and core
 copies that verbatim into the `payment_methods.name` DB column at
 install/sync time (`SyncPluginPaymentMethods`) — the Pay-tab tender buttons
