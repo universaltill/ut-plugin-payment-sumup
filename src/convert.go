@@ -48,19 +48,7 @@ type transactionPollEntry struct {
 // was in this particular response — pollTransaction's caller keeps polling
 // in that case, exactly as before this function was extracted.
 func parseTransactionPoll(body []byte) (id, status string, tipAmount int64, found bool) {
-	var wrapped struct {
-		Items []transactionPollEntry `json:"items"`
-	}
-	var bare []transactionPollEntry
-	var one transactionPollEntry
-	var entry *transactionPollEntry
-	if err := json.Unmarshal(body, &wrapped); err == nil && len(wrapped.Items) > 0 {
-		entry = &wrapped.Items[0]
-	} else if err := json.Unmarshal(body, &bare); err == nil && len(bare) > 0 {
-		entry = &bare[0]
-	} else if err := json.Unmarshal(body, &one); err == nil && one.ID != "" {
-		entry = &one
-	}
+	entry := firstTransaction(body)
 	if entry == nil {
 		return "", "", 0, false
 	}
@@ -70,6 +58,27 @@ func parseTransactionPoll(body []byte) (id, status string, tipAmount int64, foun
 	default:
 		return "", "", 0, false
 	}
+}
+
+// firstTransaction returns the first transaction in a Transactions-list
+// response, whatever its status (PENDING included), or nil when the response
+// holds none — the reader flow (reader.go) needs "no transaction yet" told
+// apart from "still processing" (ut-docs#6304). Envelope handling as
+// parseTransactionPoll's doc comment describes.
+func firstTransaction(body []byte) *transactionPollEntry {
+	var wrapped struct {
+		Items []transactionPollEntry `json:"items"`
+	}
+	var bare []transactionPollEntry
+	var one transactionPollEntry
+	if err := json.Unmarshal(body, &wrapped); err == nil && len(wrapped.Items) > 0 {
+		return &wrapped.Items[0]
+	} else if err := json.Unmarshal(body, &bare); err == nil && len(bare) > 0 {
+		return &bare[0]
+	} else if err := json.Unmarshal(body, &one); err == nil && one.ID != "" {
+		return &one
+	}
+	return nil
 }
 
 // parseTipAmountMinor best-effort-interprets a Transactions API response's

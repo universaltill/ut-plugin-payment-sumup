@@ -17,7 +17,7 @@ Reader flow: `POST /v0.1/merchants/{code}/readers/{id}/checkout` with
 the till's event payload amount is already minor units) + a top-level
 `affiliate{key}` object, then polls `GET
 /v2.1/merchants/{code}/transactions?client_transaction_id=…` once a second for
-up to 60s for a terminal status. Refund: `POST /v0.1/me/refund/{txn_id}` with
+a terminal status inside the till's 30 s gate (see the 2026-11-16 note below). Refund: `POST /v0.1/me/refund/{txn_id}` with
 `{"amount": <major-unit decimal>}` — note the unit mismatch with the reader
 endpoint (minor vs. major units) is real, not a bug; SumUp's own API is
 inconsistent about this across endpoints, confirmed against
@@ -84,3 +84,21 @@ currency today). 0-decimal CLP/COP/HUF excluded on purpose (README
 "Currencies"). Needs `view:shop` + `views_used`, `min_pos_version` 0.31.9.
 
 Build: `scripts/build.sh`.
+
+**2026-11-16 — reader timeout (v1.3.0, ut-docs#6304):** the reader flow lives
+in `src/reader.go` (untagged, `go test`-covered by `reader_test.go`, whose fake
+follows SumUp's docs: transactions lookup 404 when none, terminate always 202,
+async, no transaction left behind). The till kills an authorize call at 30 s
+(`paymentGateTimeout`), so the flow polls 18 s, then `POST
+/v0.1/merchants/{code}/readers/{id}/terminate` and re-checks until 24 s (no call
+starts after that): SUCCESSFUL -> approve (with tip); FAILED/CANCELLED ->
+`reader_timeout`; anything else -> `outcome_unknown` (a 202 proves nothing).
+Checkouts are kept in ONE bounded storage key (`attempts`, last 8; host cap is
+1024 keys, no delete) under the till's request id, which the till re-sends on a
+re-tap of Pay for the same basket (ut-docs#1762). A retry settles the old
+checkout first: paid -> approve; failed -> fresh; no transaction -> fresh only
+once 90 s have passed since it started and `GET .../readers/{id}/status` says
+ONLINE + IDLE, else decline again without starting anything. A lost
+checkout-start reply also terminates the reader. Never move the poll past the
+host gate, treat a terminate 202 as "not charged", or drop a payment that
+succeeded late.
