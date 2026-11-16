@@ -218,18 +218,28 @@ func decline(amount int64, currency, reason string) {
 	os.Exit(declinedExit)
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+// hostSumUp, realClock and pluginKV wire reader.go's flow to the host.
+type hostSumUp struct{ apiKey string }
+
+func (h hostSumUp) call(method, path string, body []byte) ([]byte, int, bool) {
+	return sumupCall(method, path, h.apiKey, body)
 }
 
+type realClock struct{}
+
+func (realClock) now() time.Time        { return time.Now() }
+func (realClock) sleep(d time.Duration) { time.Sleep(d) }
+
+type pluginKV struct{}
+
+func (pluginKV) get(k string) string    { return storageRead(k) }
+func (pluginKV) put(k string, v []byte) { storagePut(k, v) }
+
 func main() {
+	start := time.Now() // reader.go's deadlines count from here (ut-docs#6304)
 	raw, _ := io.ReadAll(os.Stdin)
 	var ev struct {
+		ID      string `json:"id"`
 		Type    string `json:"type"`
 		Payload struct {
 			Amount         int64  `json:"amount"`
@@ -315,106 +325,17 @@ func main() {
 	if merchantCode == "" {
 		decline(amount, currency, "no_merchant_code")
 	}
-	affiliateKey := strings.TrimSpace(setting("sumup_affiliate_key"))
-	readerCharge(apiKey, affiliateKey, merchantCode, currency, readerID, amount)
-}
-
-// readerCharge drives a paired SumUp reader via the Cloud API: start a
-// checkout on the reader, then poll the Transactions API (by
-// client_transaction_id) for a terminal status. Up to ~60s so a customer has
-// time to tap/insert.
-//
-// NEEDS SANDBOX VERIFICATION: the affiliate-key placement in the reader
-// checkout request body below (a top-level "affiliate" object) follows
-// SumUp's published Cloud API docs description ("the Affiliate Key ... under
-// the affiliate section") but was not confirmed against a live sandbox
-// response — verify this shape against a real SumUp merchant account before
-// relying on it in production.
-//
-// NOT DONE: this request sends no tipping configuration at all, so whether
-// the reader actually prompts the customer for a tip depends entirely on
-// tipping already being enabled in the merchant's own SumUp device/profile
-// settings — this plugin does not (and, per SumUp's published Cloud API
-// docs at write time, has no documented per-checkout field to) turn
-// tipping on. If the reader was never configured to prompt, pollTransaction
-// will simply never see a tip_amount and this feature silently does
-// nothing, which is a real gap, not covered by the "Needs sandbox
-// verification" caveat above — see README "Tips".
-func readerCharge(apiKey, affiliateKey, merchantCode, currency, readerID string, amount int64) {
-	if affiliateKey == "" {
-		decline(amount, currency, "no_affiliate_key")
+	c := &readerCharger{
+		api: hostSumUp{apiKey: apiKey}, clk: realClock{}, kv: pluginKV{},
+		affiliateKey: strings.TrimSpace(setting("sumup_affiliate_key")),
+		merchantCode: merchantCode, currency: currency, readerID: readerID,
+		requestID: ev.ID, amount: amount, start: start,
 	}
-	reqBody, _ := json.Marshal(map[string]any{
-		"total_amount": map[string]any{
-			"currency":   strings.ToUpper(currency),
-			"minor_unit": 2,
-			"value":      amount, // already minor units, no conversion needed
-		},
-		"affiliate": map[string]any{
-			"key": affiliateKey,
-		},
-	})
-	path := fmt.Sprintf("/v0.1/merchants/%s/readers/%s/checkout", merchantCode, readerID)
-	body, status, ok := sumupCall("POST", path, apiKey, reqBody)
-	if !ok {
-		decline(amount, currency, "network_error")
+	if out := c.run(); out.approved {
+		approveWithTip(amount, currency, out.authCode, out.tip)
+	} else {
+		decline(amount, currency, out.reason)
 	}
-	var checkout struct {
-		Data struct {
-			ClientTransactionID string `json:"client_transaction_id"`
-		} `json:"data"`
-		Message string `json:"message"`
-	}
-	_ = json.Unmarshal(body, &checkout)
-	clientTxnID := checkout.Data.ClientTransactionID
-	if status < 200 || status >= 300 || clientTxnID == "" {
-		decline(amount, currency, firstNonEmpty(checkout.Message, "reader_start_failed"))
-	}
-
-	txnID, outcome, tipAmount := pollTransaction(apiKey, merchantCode, clientTxnID)
-	switch outcome {
-	case "SUCCESSFUL":
-		approveWithTip(amount, currency, txnID, tipAmount)
-	case "FAILED", "CANCELLED":
-		decline(amount, currency, strings.ToLower(outcome))
-	default:
-		decline(amount, currency, "reader_timeout")
-	}
-}
-
-// pollTransaction looks up a reader checkout's outcome, and any tip the
-// customer selected on the reader, by client_transaction_id. SumUp's Cloud
-// API delivers the real outcome via webhook/return_url; there is no
-// dedicated single-transaction lookup-by-id endpoint, so — like the Stripe
-// plugin's PaymentIntent poll — this polls the Transactions list endpoint
-// filtered by client_transaction_id once a second. The list envelope shape
-// (bare array vs an "items" wrapper) wasn't confirmed against a live sandbox
-// response, so both are handled here.
-//
-// NEEDS SANDBOX VERIFICATION: tip_amount's exact presence/type in this
-// endpoint's response wasn't confirmed against a live merchant account —
-// assumed to be a decimal major-unit number (matching this API family's
-// other amount fields, e.g. the Refund endpoint's `amount`), converted to
-// minor units via majorToMinor. Deliberately decoded as json.RawMessage
-// (never a fixed Go type) on the txn struct below: this field's shape is a
-// GUESS, and a wrong guess must never break parsing THIS transaction's own
-// id/status — that would turn a card the customer already successfully
-// tapped into a false "reader_timeout" decline. parseTipAmountMinor (see
-// convert.go) is where the guess is actually interpreted, independently,
-// and it degrades to "no tip reported" for anything it doesn't recognize
-// rather than erroring.
-func pollTransaction(apiKey, merchantCode, clientTxnID string) (txnID, status string, tipAmount int64) {
-	path := fmt.Sprintf("/v2.1/merchants/%s/transactions?client_transaction_id=%s", merchantCode, clientTxnID)
-	for i := 0; i < 60; i++ {
-		body, code, ok := sumupCall("GET", path, apiKey, nil)
-		if ok && code >= 200 && code < 300 {
-			if id, st, tip, found := parseTransactionPoll(body); found {
-				return id, st, tip
-			}
-		}
-		time.Sleep(time.Second)
-	}
-	return "", "TIMEOUT", 0
 }
 
 // refundTxn refunds (part of) the original sale's transaction. The

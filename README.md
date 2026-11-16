@@ -25,7 +25,15 @@ real ones:
 - **With `sumup_reader_id` set**: drives a paired SumUp Solo/Air/3G reader
   via SumUp's Cloud API — starts a checkout on the reader, then polls the
   Transactions API for a terminal result (same shape as the Stripe plugin's
-  Terminal-reader polling loop).
+  Terminal-reader polling loop). The till waits 30 seconds for a card
+  payment, so the customer has about 18 seconds to tap; then the plugin
+  terminates the reader checkout, so a tap after the till gave up is
+  refused, never charged. A payment that went through anyway is reported
+  as paid. If SumUp still has no answer, the payment is declined as
+  `outcome_unknown`: tap **Pay** again on the same basket and the plugin
+  checks that payment first (approves it if it went through, never charges
+  twice). If you change the basket instead, check the reader or the SumUp
+  dashboard before charging again (ut-docs#6304).
 - **With no reader configured**: deterministic demo outcomes, no network
   call — same contract as `ut-plugin-payment-demo` (amount ending **.13**
   declines, **.99** times out, anything else approves). Useful for staff

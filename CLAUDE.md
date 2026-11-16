@@ -17,7 +17,7 @@ Reader flow: `POST /v0.1/merchants/{code}/readers/{id}/checkout` with
 the till's event payload amount is already minor units) + a top-level
 `affiliate{key}` object, then polls `GET
 /v2.1/merchants/{code}/transactions?client_transaction_id=…` once a second for
-up to 60s for a terminal status. Refund: `POST /v0.1/me/refund/{txn_id}` with
+a terminal status inside the till's 30 s gate (see the 2026-11-16 note below). Refund: `POST /v0.1/me/refund/{txn_id}` with
 `{"amount": <major-unit decimal>}` — note the unit mismatch with the reader
 endpoint (minor vs. major units) is real, not a bug; SumUp's own API is
 inconsistent about this across endpoints, confirmed against
@@ -84,3 +84,17 @@ currency today). 0-decimal CLP/COP/HUF excluded on purpose (README
 "Currencies"). Needs `view:shop` + `views_used`, `min_pos_version` 0.31.9.
 
 Build: `scripts/build.sh`.
+
+**2026-11-16 — reader timeout (v1.3.0, ut-docs#6304):** the reader flow moved
+to `src/reader.go` (untagged, `go test`-covered with a fake SumUp/clock in
+`reader_test.go`). The till kills an authorize call at 30 s
+(`paymentGateTimeout`), so the flow polls 18 s, then `POST
+/v0.1/merchants/{code}/readers/{id}/terminate` and re-checks until 24 s (no call starts after that): paid ->
+approve (with tip), failed/cancelled, or terminate accepted and no transaction
+within 4 s -> decline `reader_timeout` and clear the record; terminate refused or still PENDING ->
+decline `outcome_unknown`. The client_transaction_id is kept under
+`attempt:<event id>`; the till re-sends the same id on a re-tap of Pay for the
+same basket (ut-docs#1762), and the retry settles that checkout before starting
+another. A record older than 5 min with no transaction counts as never charged. A lost
+checkout-start reply also terminates the reader. Never move the
+poll past the host gate or drop a payment that succeeded late.
