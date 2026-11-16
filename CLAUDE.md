@@ -85,16 +85,20 @@ currency today). 0-decimal CLP/COP/HUF excluded on purpose (README
 
 Build: `scripts/build.sh`.
 
-**2026-11-16 — reader timeout (v1.3.0, ut-docs#6304):** the reader flow moved
-to `src/reader.go` (untagged, `go test`-covered with a fake SumUp/clock in
-`reader_test.go`). The till kills an authorize call at 30 s
+**2026-11-16 — reader timeout (v1.3.0, ut-docs#6304):** the reader flow lives
+in `src/reader.go` (untagged, `go test`-covered by `reader_test.go`, whose fake
+follows SumUp's docs: transactions lookup 404 when none, terminate always 202,
+async, no transaction left behind). The till kills an authorize call at 30 s
 (`paymentGateTimeout`), so the flow polls 18 s, then `POST
-/v0.1/merchants/{code}/readers/{id}/terminate` and re-checks until 24 s (no call starts after that): paid ->
-approve (with tip), failed/cancelled, or terminate accepted and no transaction
-within 4 s -> decline `reader_timeout` and clear the record; terminate refused or still PENDING ->
-decline `outcome_unknown`. The client_transaction_id is kept under
-`attempt:<event id>`; the till re-sends the same id on a re-tap of Pay for the
-same basket (ut-docs#1762), and the retry settles that checkout before starting
-another. A record older than 5 min with no transaction counts as never charged. A lost
-checkout-start reply also terminates the reader. Never move the
-poll past the host gate or drop a payment that succeeded late.
+/v0.1/merchants/{code}/readers/{id}/terminate` and re-checks until 24 s (no call
+starts after that): SUCCESSFUL -> approve (with tip); FAILED/CANCELLED ->
+`reader_timeout`; anything else -> `outcome_unknown` (a 202 proves nothing).
+Checkouts are kept in ONE bounded storage key (`attempts`, last 8; host cap is
+1024 keys, no delete) under the till's request id, which the till re-sends on a
+re-tap of Pay for the same basket (ut-docs#1762). A retry settles the old
+checkout first: paid -> approve; failed -> fresh; no transaction -> fresh only
+once 90 s have passed since it started and `GET .../readers/{id}/status` says
+ONLINE + IDLE, else decline again without starting anything. A lost
+checkout-start reply also terminates the reader. Never move the poll past the
+host gate, treat a terminate 202 as "not charged", or drop a payment that
+succeeded late.

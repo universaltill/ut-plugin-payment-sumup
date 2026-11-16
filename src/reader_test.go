@@ -22,11 +22,13 @@ type memKV map[string]string
 func (m memKV) get(k string) string    { return m[k] }
 func (m memKV) put(k string, v []byte) { m[k] = string(v) }
 
-// fakeSumUp simulates one merchant with one Solo reader on the Cloud API.
-// The customer taps at tapAt (from the flow's start); the transaction is
-// then PENDING for procDur and SUCCESSFUL after. A tap only lands while a
-// checkout is waiting on the reader; terminate ends the wait, but SumUp
-// refuses it once the card is being processed.
+// fakeSumUp simulates one merchant with one Solo reader, following SumUp's
+// published Cloud API docs (not a kinder model): the transactions lookup
+// answers 404 when no transaction matches; terminate answers 202 while the
+// reader is online, acts asynchronously and only on a checkout still
+// waiting for a card, and by default leaves no transaction behind. The
+// customer taps at tapAt (from the flow's start); the transaction is then
+// PENDING for procDur and SUCCESSFUL after, listed visibleAfter the tap.
 type fakeSumUp struct {
 	clk     *fakeClock
 	start   time.Time
@@ -34,24 +36,22 @@ type fakeSumUp struct {
 	tapAt   time.Duration // 0 = never taps
 	procDur time.Duration
 
-	checkouts     []*fakeCheckout
-	terminates    int
-	startNetFail  bool // the checkout reaches the reader but the reply is lost
-	startRejected bool
-
-	// Closer-to-reality knobs (SumUp's terminate is async, unconfirmed,
-	// and only accepted while the reader waits for a card or PIN):
-	terminateLeavesNoTxn bool          // a terminated checkout leaves no transaction
-	terminateRefusedIdle bool          // terminate on an idle reader -> 422
-	terminateAlwaysOK    bool          // 202 even while a card is being processed
-	visibleAfter         time.Duration // a transaction is listed only this long after the tap
+	checkouts      []*fakeCheckout
+	terminates     int
+	statusReads    int
+	startNetFail   bool // the checkout reaches the reader but the reply is lost
+	startRejected  bool
+	terminateFails bool          // terminate leaves a FAILED transaction (undocumented; off by default)
+	visibleAfter   time.Duration // listing lag after the tap
+	stuckState     string        // reader status state override (e.g. WAITING_FOR_CARD)
+	offline        bool          // reader status OFFLINE (state may still read IDLE)
 }
 
 type fakeCheckout struct {
 	clientTxn string
 	waiting   bool
 	tapped    time.Time
-	status    string // "" (no transaction yet), PENDING, SUCCESSFUL, CANCELLED
+	status    string // "" (no transaction), PENDING, SUCCESSFUL, FAILED
 }
 
 func newFakeSumUp(clk *fakeClock) *fakeSumUp {
@@ -97,49 +97,41 @@ func (f *fakeSumUp) call(method, path string, body []byte) ([]byte, int, bool) {
 		return b, 201, true
 	case method == "POST" && strings.HasSuffix(path, "/terminate"):
 		f.terminates++
-		if f.terminateAlwaysOK {
-			for _, c := range f.checkouts {
-				c.waiting = false
-			}
-			return nil, 202, true
-		}
-		if f.terminateRefusedIdle {
-			idle := true
-			for _, c := range f.checkouts {
-				if c.waiting {
-					idle = false
-				}
-			}
-			if idle {
-				return []byte(`{"message":"reader not in a transaction"}`), 422, true
-			}
-		}
-		for _, c := range f.checkouts {
-			if c.status == "PENDING" {
-				return []byte(`{"message":"transaction in progress"}`), 422, true
-			}
-		}
 		for _, c := range f.checkouts {
 			if c.waiting {
 				c.waiting = false
-				if c.status == "" && !f.terminateLeavesNoTxn {
-					c.status = "CANCELLED"
+				if f.terminateFails {
+					c.status, c.tapped = "FAILED", f.clk.t
 				}
 			}
 		}
 		return nil, 202, true
+	case method == "GET" && strings.HasSuffix(path, "/status"):
+		f.statusReads++
+		state := "IDLE"
+		for _, c := range f.checkouts {
+			if c.waiting {
+				state = "WAITING_FOR_CARD"
+			}
+		}
+		if f.stuckState != "" {
+			state = f.stuckState
+		}
+		online := "ONLINE"
+		if f.offline {
+			online = "OFFLINE"
+		}
+		b, _ := json.Marshal(map[string]any{"data": map[string]string{"status": online, "state": state}})
+		return b, 200, true
 	case method == "GET" && strings.Contains(path, "/transactions?client_transaction_id="):
 		id := path[strings.Index(path, "=")+1:]
 		for _, c := range f.checkouts {
-			if c.clientTxn == id && c.status != "" && c.status != "CANCELLED" && f.clk.t.Before(c.tapped.Add(f.visibleAfter)) {
-				break // the transaction exists but is not listed yet
-			}
-			if c.clientTxn == id && c.status != "" {
-				b, _ := json.Marshal(map[string]any{"items": []map[string]any{{"id": "txn-" + id, "status": c.status}}})
+			if c.clientTxn == id && c.status != "" && !f.clk.t.Before(c.tapped.Add(f.visibleAfter)) {
+				b, _ := json.Marshal(map[string]any{"id": "txn-" + id, "status": c.status})
 				return b, 200, true
 			}
 		}
-		return []byte(`{"items":[]}`), 200, true
+		return []byte(`{"error_code":"NOT_FOUND"}`), 404, true
 	}
 	return []byte(`{"message":"unexpected"}`), 400, true
 }
@@ -155,6 +147,7 @@ func newReaderCharger(f *fakeSumUp, kv memKV, requestID string) *readerCharger {
 func runReader(t *testing.T, c *readerCharger, clk *fakeClock) readerOutcome {
 	t.Helper()
 	start := clk.t
+	c.start = start
 	out := c.run()
 	if took := clk.t.Sub(start); took >= hostGate {
 		t.Fatalf("flow took %s, past the host's %s payment gate: the till has already shown the sale unpaid and killed the plugin", took, hostGate)
@@ -162,60 +155,71 @@ func runReader(t *testing.T, c *readerCharger, clk *fakeClock) readerOutcome {
 	return out
 }
 
-func TestReaderLateTapAfterTimeoutIsTerminatedNotCharged(t *testing.T) {
+func newWorld() (*fakeClock, *fakeSumUp, memKV) {
 	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
-	f.tapAt = 29 * time.Second
-	out := runReader(t, newReaderCharger(f, memKV{}, "att:0:ab"), clk)
-	if out.approved || out.reason != "reader_timeout" {
-		t.Fatalf("want declined reader_timeout, got %+v", out)
-	}
-	if f.terminates == 0 {
-		t.Fatal("reader checkout was never terminated")
-	}
-	clk.sleep(60 * time.Second)
-	if n := f.charged(); n != 0 {
-		t.Fatalf("customer charged %d time(s) for a sale the till showed unpaid", n)
+	return clk, newFakeSumUp(clk), memKV{}
+}
+
+// retap is the cashier tapping Pay again on the same basket after wait.
+func retap(f *fakeSumUp, clk *fakeClock, wait, tapAt time.Duration) {
+	clk.sleep(wait)
+	f.start, f.tapAt = clk.t, tapAt
+}
+
+func TestReaderLateTapAfterTimeoutIsNotCharged(t *testing.T) {
+	for _, failedTxn := range []bool{false, true} {
+		clk, f, kv := newWorld()
+		f.terminateFails = failedTxn
+		f.tapAt = 29 * time.Second
+		out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+		want := "outcome_unknown" // a 202 alone proves nothing
+		if failedTxn {
+			want = "reader_timeout"
+		}
+		if out.approved || out.reason != want {
+			t.Fatalf("failedTxn=%v: want declined %s, got %+v", failedTxn, want, out)
+		}
+		if f.terminates == 0 {
+			t.Fatal("reader checkout was never terminated")
+		}
+		clk.sleep(60 * time.Second)
+		if n := f.charged(); n != 0 {
+			t.Fatalf("customer charged %d time(s) for a sale the till showed unpaid", n)
+		}
 	}
 }
 
 func TestReaderTapDuringTerminateIsReportedPaid(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
+	clk, f, kv := newWorld()
 	f.tapAt = 17900 * time.Millisecond
 	f.procDur = 3 * time.Second
-	out := runReader(t, newReaderCharger(f, memKV{}, "att:0:ab"), clk)
-	if !out.approved || out.authCode == "" {
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if !out.approved || out.authCode != "txn-ctx-a" {
 		t.Fatalf("captured payment not surfaced as approved: %+v", out)
 	}
 }
 
 func TestReaderUnsettledAtDeadlineIsOutcomeUnknown(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
+	clk, f, kv := newWorld()
 	f.tapAt = 17 * time.Second
 	f.procDur = time.Minute
-	kv := memKV{}
 	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
 	if out.approved || out.reason != "outcome_unknown" {
 		t.Fatalf("want declined outcome_unknown, got %+v", out)
 	}
-	if !strings.Contains(kv["attempt:att:0:ab"], "ctx-a") {
-		t.Fatalf("attempt record not kept: %q", kv["attempt:att:0:ab"])
+	if e, ok := findAttempt(kv, "att:0:ab"); !ok || e.Ref != "ctx-a" {
+		t.Fatalf("attempt record not kept: %q", kv[attemptsKey])
 	}
 }
 
 func TestReaderRetryAfterLateSuccessApprovesWithoutSecondCharge(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
+	clk, f, kv := newWorld()
 	f.tapAt = 17 * time.Second
 	f.procDur = 15 * time.Second
-	kv := memKV{}
 	if first := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk); first.approved {
 		t.Fatalf("first attempt should not know the outcome yet: %+v", first)
 	}
-	clk.sleep(30 * time.Second)
-	f.start, f.tapAt = clk.t, 0
+	retap(f, clk, 30*time.Second, 0)
 	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
 	if !second.approved || second.authCode != "txn-ctx-a" {
 		t.Fatalf("retry did not surface the late payment: %+v", second)
@@ -225,29 +229,125 @@ func TestReaderRetryAfterLateSuccessApprovesWithoutSecondCharge(t *testing.T) {
 	}
 }
 
-func TestReaderRetryAfterCancelledAttemptChargesFresh(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
-	kv := memKV{}
+// Review B2: the card is read just before terminate and SumUp lists the
+// transaction only seconds later. The first attempt can't see it; the
+// retry must find it, never start a second checkout.
+func TestReaderListingLagNeverDoubleCharges(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.tapAt = 17900 * time.Millisecond
+	f.procDur = time.Second
+	f.visibleAfter = 7 * time.Second
+	first := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if first.approved || first.reason != "outcome_unknown" {
+		t.Fatalf("want outcome_unknown while SumUp lags, got %+v", first)
+	}
+	retap(f, clk, 2*time.Second, 3*time.Second)
+	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if !second.approved || second.authCode != "txn-ctx-a" {
+		t.Fatalf("retry should approve the first checkout: %+v", second)
+	}
+	if len(f.checkouts) != 1 || f.charged() != 1 {
+		t.Fatalf("want 1 checkout and 1 charge, got %d / %d", len(f.checkouts), f.charged())
+	}
+}
+
+// Review B1/B2: a retry soon after a no-tap timeout finds no transaction
+// (404). It must not start a second checkout yet, and must answer fast.
+func TestReaderEarlyRetryWithNoTransactionStartsNothing(t *testing.T) {
+	clk, f, kv := newWorld()
 	if first := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk); first.approved {
 		t.Fatalf("no tap but approved: %+v", first)
 	}
-	clk.sleep(5 * time.Second)
-	f.start, f.tapAt = clk.t, 3*time.Second
+	retap(f, clk, 5*time.Second, 3*time.Second)
+	start := clk.t
+	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if second.approved || second.reason != "outcome_unknown" || len(f.checkouts) != 1 {
+		t.Fatalf("want outcome_unknown and no new checkout, got %+v (%d checkouts)", second, len(f.checkouts))
+	}
+	if took := clk.t.Sub(start); took > 3*time.Second {
+		t.Fatalf("early retry took %s; should answer at once", took)
+	}
+}
+
+// Past settleWindow with no transaction and an idle reader, the earlier
+// checkout never read a card: the retry charges fresh (no stuck basket).
+func TestReaderLateRetryOnIdleReaderChargesFresh(t *testing.T) {
+	clk, f, kv := newWorld()
+	if first := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk); first.approved {
+		t.Fatalf("no tap but approved: %+v", first)
+	}
+	retap(f, clk, 90*time.Second, 3*time.Second)
+	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if !second.approved || second.authCode != "txn-ctx-b" || f.charged() != 1 {
+		t.Fatalf("late retry should charge a fresh checkout once: %+v charged=%d", second, f.charged())
+	}
+}
+
+// ...but not while the reader says it is still busy.
+func TestReaderLateRetryOnBusyReaderStartsNothing(t *testing.T) {
+	clk, f, kv := newWorld()
+	runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	f.stuckState = "WAITING_FOR_PIN"
+	retap(f, clk, 120*time.Second, 3*time.Second)
+	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if second.approved || second.reason != "outcome_unknown" || len(f.checkouts) != 1 {
+		t.Fatalf("want outcome_unknown and no new checkout, got %+v", second)
+	}
+}
+
+// When SumUp does record the terminated checkout as FAILED, the retry
+// starts fresh at once.
+func TestReaderRetryAfterFailedCheckoutChargesFresh(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.terminateFails = true
+	runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	retap(f, clk, 5*time.Second, 3*time.Second)
 	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
 	if !second.approved || second.authCode != "txn-ctx-b" {
 		t.Fatalf("retry should start a fresh checkout: %+v", second)
 	}
 }
 
+// Settling the earlier attempt used most of the gate: decline rather than
+// start a checkout that would be terminated at once.
+func TestReaderSlowRetrySettleDeclinesInsteadOfStartingLate(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.terminateFails = true
+	runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	// The earlier card read is still in flight and is declined 8 s later.
+	f.checkouts[0].status, f.checkouts[0].tapped = "PENDING", clk.t
+	f.procDur = time.Hour
+	retap(f, clk, time.Second, 0)
+	c := newReaderCharger(f, kv, "att:0:ab")
+	c.api = failAfter{f, 8 * time.Second}
+	second := runReader(t, c, clk)
+	if second.approved || second.reason != "previous_attempt_settled" || len(f.checkouts) != 1 {
+		t.Fatalf("want previous_attempt_settled and no new checkout, got %+v (%d checkouts)", second, len(f.checkouts))
+	}
+}
+
+// failAfter turns the first checkout FAILED once d has passed since the
+// wrapper's first call (a card read that is declined by the issuer).
+type failAfter struct {
+	f *fakeSumUp
+	d time.Duration
+}
+
+func (w failAfter) call(method, path string, body []byte) ([]byte, int, bool) {
+	c := w.f.checkouts[0]
+	if c.status == "PENDING" && !w.f.clk.t.Before(c.tapped.Add(w.d)) {
+		c.status = "FAILED"
+	}
+	return w.f.call(method, path, body)
+}
+
 // The checkout reached the reader but its reply was lost: the reader is
 // prompting for a sale the till will decline, so terminate it.
 func TestReaderLostStartReplyTerminatesReader(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
+	clk, f, kv := newWorld()
 	f.startNetFail = true
 	f.tapAt = 25 * time.Second
-	out := runReader(t, newReaderCharger(f, memKV{}, "att:0:ab"), clk)
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
 	if out.approved || out.reason != "network_error" {
 		t.Fatalf("want declined network_error, got %+v", out)
 	}
@@ -261,77 +361,36 @@ func TestReaderLostStartReplyTerminatesReader(t *testing.T) {
 }
 
 func TestReaderPromptTapApproves(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
+	clk, f, kv := newWorld()
 	f.tapAt = 4 * time.Second
-	out := runReader(t, newReaderCharger(f, memKV{}, "att:0:ab"), clk)
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
 	if !out.approved || out.authCode != "txn-ctx-a" || f.terminates != 0 {
 		t.Fatalf("prompt tap: %+v terminates=%d", out, f.terminates)
 	}
 }
 
-// Real SumUp: terminating a checkout before any card read may leave no
-// transaction, and terminate is refused on an idle reader. The cashier's
-// retry must still start a fresh checkout, not report outcome_unknown
-// forever (ut-docs#6304 Tester D1).
-func TestReaderRetryAfterTimeoutWithNoTransactionChargesFresh(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
-	f.terminateLeavesNoTxn, f.terminateRefusedIdle = true, true
-	kv := memKV{}
-	if first := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk); first.approved || first.reason != "reader_timeout" {
-		t.Fatalf("want reader_timeout, got %+v", first)
-	}
-	clk.sleep(5 * time.Second)
-	f.start, f.tapAt = clk.t, 3*time.Second
+// An OFFLINE reader may report its last state (IDLE): not proof it is idle.
+func TestReaderLateRetryOnOfflineReaderStartsNothing(t *testing.T) {
+	clk, f, kv := newWorld()
+	runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	f.offline = true
+	retap(f, clk, 120*time.Second, 3*time.Second)
 	second := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
-	if !second.approved || second.authCode != "txn-ctx-b" {
-		t.Fatalf("retry should start a fresh checkout: %+v", second)
+	if second.approved || second.reason != "outcome_unknown" || len(f.checkouts) != 1 {
+		t.Fatalf("want outcome_unknown and no new checkout, got %+v", second)
 	}
 }
 
-// A transaction that shows up a few seconds after an accepted terminate
-// (the card was read just before it) is the customer's payment.
-func TestReaderTransactionAppearingAfterTerminateIsPaid(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
-	f.terminateAlwaysOK, f.terminateLeavesNoTxn = true, true
-	f.tapAt = 17900 * time.Millisecond
-	f.procDur = time.Second
-	f.visibleAfter = 3 * time.Second
-	out := runReader(t, newReaderCharger(f, memKV{}, "att:0:ab"), clk)
-	if !out.approved || out.authCode != "txn-ctx-a" {
-		t.Fatalf("payment that went through was not reported paid: %+v", out)
+// Only the last maxAttempts tenders are kept, in one storage key.
+func TestAttemptLogIsBounded(t *testing.T) {
+	kv := memKV{}
+	for i := 0; i < maxAttempts+5; i++ {
+		putAttempt(kv, attemptEntry{ID: "id" + string(rune('a'+i)), Ref: "ctx"})
 	}
-}
-
-// Terminate refused and no transaction: the reader may be mid-read, so
-// this is unknown, never "not charged".
-func TestReaderTerminateRefusedWithNoTransactionIsUnknown(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
-	f.terminateRefusedIdle, f.terminateLeavesNoTxn = true, true
-	f.tapAt = 17900 * time.Millisecond
-	f.procDur = time.Minute
-	f.visibleAfter = time.Minute
-	f.terminateAlwaysOK = false
-	out := runReader(t, newReaderCharger(f, memKV{}, "att:0:ab"), clk)
-	if out.approved || out.reason != "outcome_unknown" {
-		t.Fatalf("want outcome_unknown, got %+v", out)
+	if n := len(loadAttempts(kv)); n != maxAttempts || len(kv) != 1 {
+		t.Fatalf("want %d entries in 1 key, got %d entries in %d keys", maxAttempts, n, len(kv))
 	}
-}
-
-// A retry long after an unknown outcome whose checkout never produced a
-// transaction: no card was read, so start fresh instead of staying stuck.
-func TestReaderStaleAttemptWithNoTransactionChargesFresh(t *testing.T) {
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	f := newFakeSumUp(clk)
-	kv := memKV{"attempt:att:0:ab": `{"client_txn":"ctx-old","started_at":1700000000}`}
-	f.terminateRefusedIdle = true
-	clk.sleep(10 * time.Minute)
-	f.start, f.tapAt = clk.t, 3*time.Second
-	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
-	if !out.approved || out.authCode != "txn-ctx-a" {
-		t.Fatalf("stale attempt should not block a fresh checkout: %+v", out)
+	if _, ok := findAttempt(kv, "ida"); ok {
+		t.Fatal("oldest entry not dropped")
 	}
 }
