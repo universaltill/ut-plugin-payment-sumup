@@ -400,6 +400,7 @@ func main() {
 	c := &readerCharger{
 		api: hostSumUp{apiKey: apiKey}, clk: realClock{}, kv: pluginKV,
 		affiliateKey: strings.TrimSpace(setting("sumup_affiliate_key")),
+		appID:        strings.TrimSpace(setting("sumup_app_id")),
 		merchantCode: merchantCode, currency: currency, readerID: readerID,
 		requestID: ev.ID, amount: amount, start: start,
 	}

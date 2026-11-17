@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,9 @@ type fakeSumUp struct {
 	visibleAfter   time.Duration // listing lag after the tap
 	stuckState     string        // reader status state override (e.g. WAITING_FOR_CARD)
 	offline        bool          // reader status OFFLINE (state may still read IDLE)
+	checkoutBodies [][]byte      // every checkout request body received
+	startStatus    int           // non-zero: the checkout is taken but answered with this status (e.g. 500)
+	onCheckout     func()        // called when a checkout request arrives, before the reply
 }
 
 type fakeCheckout struct {
@@ -55,6 +59,7 @@ type fakeCheckout struct {
 	waiting   bool
 	tapped    time.Time
 	status    string // "" (no transaction), PENDING, SUCCESSFUL, FAILED
+	foreignID string // affiliate.foreign_transaction_id of the request
 }
 
 func newFakeSumUp(clk *fakeClock) *fakeSumUp {
@@ -91,10 +96,23 @@ func (f *fakeSumUp) call(method, path string, body []byte) ([]byte, int, bool) {
 		if f.startRejected {
 			return []byte(`{"message":"reader busy"}`), 422, true
 		}
-		c := &fakeCheckout{clientTxn: "ctx-" + string(rune('a'+len(f.checkouts))), waiting: true}
+		f.checkoutBodies = append(f.checkoutBodies, body)
+		if f.onCheckout != nil {
+			f.onCheckout()
+		}
+		var req struct {
+			Affiliate struct {
+				Foreign string `json:"foreign_transaction_id"`
+			} `json:"affiliate"`
+		}
+		_ = json.Unmarshal(body, &req)
+		c := &fakeCheckout{clientTxn: "ctx-" + string(rune('a'+len(f.checkouts))), waiting: true, foreignID: req.Affiliate.Foreign}
 		f.checkouts = append(f.checkouts, c)
 		if f.startNetFail {
 			return nil, 0, false
+		}
+		if f.startStatus != 0 {
+			return []byte(`{"message":"server error"}`), f.startStatus, true
 		}
 		b, _ := json.Marshal(map[string]any{"data": map[string]string{"client_transaction_id": c.clientTxn}})
 		return b, 201, true
@@ -126,6 +144,15 @@ func (f *fakeSumUp) call(method, path string, body []byte) ([]byte, int, bool) {
 		}
 		b, _ := json.Marshal(map[string]any{"data": map[string]string{"status": online, "state": state}})
 		return b, 200, true
+	case method == "GET" && strings.Contains(path, "/transactions?foreign_transaction_id="):
+		id, _ := url.QueryUnescape(path[strings.Index(path, "=")+1:])
+		for _, c := range f.checkouts {
+			if c.foreignID == id && c.status != "" && !f.clk.t.Before(c.tapped.Add(f.visibleAfter)) {
+				b, _ := json.Marshal(map[string]any{"id": "txn-" + c.clientTxn, "status": c.status})
+				return b, 200, true
+			}
+		}
+		return []byte(`{"error_code":"NOT_FOUND"}`), 404, true
 	case method == "GET" && strings.Contains(path, "/transactions?client_transaction_id="):
 		id := path[strings.Index(path, "=")+1:]
 		for _, c := range f.checkouts {
@@ -395,5 +422,150 @@ func TestAttemptLogIsBounded(t *testing.T) {
 	}
 	if _, ok := findAttempt(kv, "ida"); ok {
 		t.Fatal("oldest entry not dropped")
+	}
+}
+
+func lastAffiliate(t *testing.T, f *fakeSumUp) map[string]string {
+	t.Helper()
+	if len(f.checkoutBodies) == 0 {
+		t.Fatal("no checkout request was sent")
+	}
+	var req struct {
+		Affiliate map[string]string `json:"affiliate"`
+	}
+	if err := json.Unmarshal(f.checkoutBodies[len(f.checkoutBodies)-1], &req); err != nil {
+		t.Fatal(err)
+	}
+	return req.Affiliate
+}
+
+// SumUp's create-checkout schema (ut-docs#6561): affiliate needs app_id AND
+// key; the default app id is our bundle id.
+func TestCheckoutSendsDefaultAppIDWithKeyAndForeignID(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.tapAt = 2 * time.Second
+	runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	aff := lastAffiliate(t, f)
+	if aff["app_id"] != "com.universaltill.pos" || aff["key"] != "aff" {
+		t.Fatalf("affiliate = %v, want app_id com.universaltill.pos and key aff", aff)
+	}
+	if want := "ut-att:0:ab-1700000000"; aff["foreign_transaction_id"] != want {
+		t.Fatalf("foreign_transaction_id = %q, want %q", aff["foreign_transaction_id"], want)
+	}
+}
+
+func TestCheckoutSendsConfiguredAppID(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.tapAt = 2 * time.Second
+	c := newReaderCharger(f, kv, "att:0:ab")
+	c.appID = "com.example.shop"
+	runReader(t, c, clk)
+	if got := lastAffiliate(t, f)["app_id"]; got != "com.example.shop" {
+		t.Fatalf("app_id = %q, want com.example.shop", got)
+	}
+}
+
+func TestEmptyAffiliateKeyRefusesWithoutCallingSumUp(t *testing.T) {
+	clk, f, kv := newWorld()
+	c := newReaderCharger(f, kv, "att:0:ab")
+	c.affiliateKey = ""
+	out := runReader(t, c, clk)
+	if out.approved || out.reason != "no_affiliate_key" {
+		t.Fatalf("want decline no_affiliate_key, got %+v", out)
+	}
+	if len(f.checkouts) != 0 {
+		t.Fatal("a checkout was started without an affiliate key")
+	}
+}
+
+// The checkout start reply is lost but the reader got it and the customer
+// taps: the payment is found by foreign_transaction_id and approved, never
+// dropped (ut-docs#6440).
+func TestLostStartReplyIsFoundByForeignID(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startNetFail = true
+	f.tapAt = 100 * time.Millisecond
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if !out.approved || out.authCode != "txn-ctx-a" {
+		t.Fatalf("want approved with txn-ctx-a, got %+v", out)
+	}
+	if n := f.charged(); n != 1 {
+		t.Fatalf("charged %d times, want 1", n)
+	}
+}
+
+// Lost reply and nothing found yet: decline, but remember the foreign id so
+// a re-tap of Pay settles it instead of starting a second charge.
+func TestLostStartReplyRemembersForeignIDForRetry(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startNetFail = true
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if out.approved || out.reason != "network_error" {
+		t.Fatalf("want decline network_error, got %+v", out)
+	}
+	rec, found := findAttempt(kv, "att:0:ab")
+	if want := "ut-att:0:ab-1700000000"; !found || rec.Ref != want {
+		t.Fatalf("attempt = %+v found=%v, want Ref %q", rec, found, want)
+	}
+}
+
+// A request id with URL-special characters must still be found after a lost
+// start (the lookup query is escaped).
+func TestLostStartReplyWithSpecialCharsInRequestID(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startNetFail = true
+	f.tapAt = 100 * time.Millisecond
+	out := runReader(t, newReaderCharger(f, kv, "a&b=c #d+e"), clk)
+	if !out.approved || f.charged() != 1 {
+		t.Fatalf("want approved and charged once, got %+v charged=%d", out, f.charged())
+	}
+}
+
+// An older till sends no request id: no foreign id is sent and a lost start
+// is declined without a stored attempt.
+func TestEmptyRequestIDSendsNoForeignID(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.tapAt = 2 * time.Second
+	runReader(t, newReaderCharger(f, kv, ""), clk)
+	if _, has := lastAffiliate(t, f)["foreign_transaction_id"]; has {
+		t.Fatal("foreign_transaction_id sent without a request id")
+	}
+}
+
+// The attempt is on record before the checkout request is sent, so a host
+// kill during a hung reply still leaves the re-tap something to settle.
+func TestAttemptRecordedBeforeCheckoutRequest(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.tapAt = 2 * time.Second
+	var seen attemptEntry
+	f.onCheckout = func() { seen, _ = findAttempt(kv, "att:0:ab") }
+	runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if want := "ut-att:0:ab-1700000000"; seen.Ref != want {
+		t.Fatalf("attempt Ref at request time = %q, want %q", seen.Ref, want)
+	}
+}
+
+// A 5xx on the start may still have reached the reader: it is stopped and
+// the sale looked up, like a lost reply.
+func TestServerErrorOnStartIsLookedUpLikeLostReply(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startStatus = 500
+	f.tapAt = 100 * time.Millisecond
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if !out.approved || f.charged() != 1 {
+		t.Fatalf("want approved once, got %+v charged=%d", out, f.charged())
+	}
+}
+
+// A definite 4xx refusal clears the pre-recorded attempt: nothing to settle.
+func TestRejectedStartClearsAttempt(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startRejected = true
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if out.reason != "reader busy" {
+		t.Fatalf("reason = %q, want reader busy", out.reason)
+	}
+	if rec, _ := findAttempt(kv, "att:0:ab"); rec.Ref != "" {
+		t.Fatalf("attempt Ref = %q after a rejected start, want empty", rec.Ref)
 	}
 }

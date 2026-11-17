@@ -112,3 +112,20 @@ never by the bare last approval. Core's `transaction_ref` / `original_payments`
 are used first and need no plugin storage. Refund order and the decline
 `unknown_original_payment` live in `src/refund.go`. All of it is untagged and
 tested against fakes that enforce the real host caps (`refundlink_test.go`).
+
+**Affiliate app_id + lost start (ut-docs#6561/#6440, v1.5.0):** the checkout
+body's `affiliate` is `{app_id, key, foreign_transaction_id}` (setting
+`sumup_app_id`, default `com.universaltill.pos`; empty key still refuses
+`no_affiliate_key`). The Affiliate Keys docs page shows a `{affiliate, checkout}`
+wrapper, the create-checkout reference (authoritative) is flat with
+`total_amount` — we follow the reference. `foreign_transaction_id` =
+`ut-<request id>-<start unix>`; a lost start reply stores it as the attempt Ref
+(prefix `ut-` -> lookup by `foreign_transaction_id`, UUID client ids never
+start with it). Still NEEDS SANDBOX VERIFICATION.
+The attempt (Ref = foreign id) is saved BEFORE the checkout POST, so a host
+kill during a hung reply still lets the re-tap settle it; a 5xx or id-less 2xx
+is treated as a lost reply (terminate + lookup, nothing after 24 s); a 4xx
+clears it. Sandbox items still open: does the transactions lookup by
+`foreign_transaction_id` answer 404 (not 400/422) when none exists (else a
+retry stays `outcome_unknown`); `app_id` must equal the identifier the key was
+registered for; foreign id has no documented length limit.

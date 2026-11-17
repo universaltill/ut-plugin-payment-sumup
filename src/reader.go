@@ -32,6 +32,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -49,6 +50,16 @@ const (
 	// start clean.
 	retryStartBudget = 6 * time.Second
 )
+
+// defaultAppID is Universal Till's application identifier (App ID / Bundle
+// ID) as registered with the affiliate key; SumUp requires app_id together
+// with key in the checkout's affiliate object. Not secret.
+const defaultAppID = "com.universaltill.pos"
+
+// foreignPrefix marks a stored attempt reference that is a foreign
+// transaction id (a checkout whose start reply was lost, so SumUp's
+// client_transaction_id was never seen) rather than a client_transaction_id.
+const foreignPrefix = "ut-"
 
 // sumupAPI performs one SumUp request: body, HTTP status, and ok=false only
 // on a transport failure.
@@ -75,6 +86,7 @@ type readerCharger struct {
 	clk          clock
 	kv           kvStore
 	affiliateKey string
+	appID        string // affiliate app_id; "" = defaultAppID
 	merchantCode string
 	currency     string
 	readerID     string
@@ -101,9 +113,10 @@ func isFailed(t *transactionPollEntry) bool {
 
 // run drives one authorize on the paired reader.
 //
-// NEEDS SANDBOX VERIFICATION (unchanged from v1.2): the affiliate-key
-// placement in the checkout body (a top-level "affiliate" object) follows
-// SumUp's Cloud API docs but was not confirmed against a live sandbox.
+// NEEDS SANDBOX VERIFICATION: the affiliate object {app_id, key,
+// foreign_transaction_id} in the checkout body follows SumUp's create-
+// checkout reference (developer.sumup.com/api/readers/create-checkout) but
+// was not confirmed against a live sandbox.
 //
 // NOT DONE: no tipping configuration is sent — whether the reader prompts
 // for a tip depends on the merchant's own SumUp settings; see README "Tips".
@@ -124,34 +137,67 @@ func (c *readerCharger) run() readerOutcome {
 		return refusedReader("no_affiliate_key")
 	}
 
-	// 1. Start the checkout on the reader.
+	// 1. Start the checkout on the reader. foreign_transaction_id (ours,
+	// unique per start) lets a checkout whose reply we never saw be found
+	// again through the Transactions API.
+	startedAt := c.clk.now().Unix()
+	foreignID := ""
+	if c.requestID != "" {
+		foreignID = fmt.Sprintf("%s%s-%d", foreignPrefix, c.requestID, startedAt)
+	}
+	appID := c.appID
+	if appID == "" {
+		appID = defaultAppID
+	}
+	affiliate := map[string]any{"app_id": appID, "key": c.affiliateKey}
+	if foreignID != "" {
+		affiliate["foreign_transaction_id"] = foreignID
+	}
 	reqBody, _ := json.Marshal(map[string]any{
 		"total_amount": map[string]any{
 			"currency":   strings.ToUpper(c.currency),
 			"minor_unit": 2,
 			"value":      c.amount, // already minor units, no conversion needed
 		},
-		"affiliate": map[string]any{
-			"key": c.affiliateKey,
-		},
+		"affiliate": affiliate,
 	})
-	startedAt := c.clk.now().Unix()
-	body, status, ok := c.api.call("POST", c.readerPath("checkout"), reqBody)
-	if !ok {
-		// The request may have reached the reader and the reply been lost:
-		// the reader would then prompt for a sale the till declines.
-		c.api.call("POST", c.readerPath("terminate"), nil)
-		return refusedReader("network_error")
+	// Record the foreign id BEFORE the call: the host may kill the plugin at
+	// 30 s while SumUp has already taken the checkout and the reply hangs;
+	// the re-tap of Pay must then find and settle it, not start a second one.
+	if foreignID != "" {
+		putAttempt(c.kv, attemptEntry{ID: c.requestID, Ref: foreignID, At: startedAt})
 	}
+	body, status, ok := c.api.call("POST", c.readerPath("checkout"), reqBody)
 	var checkout struct {
 		Data struct {
 			ClientTransactionID string `json:"client_transaction_id"`
 		} `json:"data"`
 		Message string `json:"message"`
 	}
-	_ = json.Unmarshal(body, &checkout)
+	if ok {
+		_ = json.Unmarshal(body, &checkout)
+	}
 	clientTxn := checkout.Data.ClientTransactionID
-	if status < 200 || status >= 300 || clientTxn == "" {
+	if !ok || status >= 500 || (status >= 200 && status < 300 && clientTxn == "") {
+		// No usable reply (transport failure, SumUp 5xx, a 2xx without an
+		// id): the request may still have reached the reader, which would
+		// prompt for a sale the till declines. Stop it and look the sale up
+		// by our foreign id; a tap that landed first is this sale's payment.
+		// Nothing starts after hardDeadline (the host's gate is 30 s).
+		if c.elapsed()+pollInterval >= hardDeadline {
+			return refusedReader("network_error")
+		}
+		c.api.call("POST", c.readerPath("terminate"), nil)
+		if foreignID != "" && c.elapsed()+pollInterval < hardDeadline {
+			if t := c.awaitTransaction(foreignID); t != nil && t.Status == "SUCCESSFUL" {
+				return paidReader(t)
+			}
+		}
+		return refusedReader("network_error")
+	}
+	if status < 200 || status >= 300 {
+		// A definite refusal: nothing was started, so nothing to settle.
+		putAttempt(c.kv, attemptEntry{ID: c.requestID})
 		return refusedReader(firstNonEmpty(checkout.Message, "reader_start_failed"))
 	}
 	putAttempt(c.kv, attemptEntry{ID: c.requestID, Ref: clientTxn, At: startedAt})
@@ -235,6 +281,7 @@ func (c *readerCharger) awaitTransaction(clientTxn string) *transactionPollEntry
 }
 
 // lookup polls the Transactions endpoint filtered by client_transaction_id
+// (or foreign_transaction_id for a reference starting foreignPrefix)
 // (SumUp has no lookup-by-id for a reader checkout): (nil, true) when SumUp
 // has none — documented as a 404, an empty list is treated the same —
 // ok=false when the request failed. The envelope shape and tip_amount's
@@ -242,7 +289,11 @@ func (c *readerCharger) awaitTransaction(clientTxn string) *transactionPollEntry
 // parseTipAmountMinor in convert.go, which degrade rather than fail so a
 // wrong guess never turns a real SUCCESSFUL payment into a decline.
 func (c *readerCharger) lookup(clientTxn string) (*transactionPollEntry, bool) {
-	path := fmt.Sprintf("/v2.1/merchants/%s/transactions?client_transaction_id=%s", c.merchantCode, clientTxn)
+	param := "client_transaction_id=" + clientTxn
+	if strings.HasPrefix(clientTxn, foreignPrefix) {
+		param = "foreign_transaction_id=" + url.QueryEscape(clientTxn)
+	}
+	path := fmt.Sprintf("/v2.1/merchants/%s/transactions?%s", c.merchantCode, param)
 	body, code, ok := c.api.call("GET", path, nil)
 	switch {
 	case !ok:

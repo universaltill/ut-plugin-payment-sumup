@@ -49,7 +49,12 @@ real ones:
 - `sumup_merchant_code` — the merchant's SumUp merchant code.
 - `sumup_affiliate_key` — Universal Till's own integrator/affiliate key
   (**not** merchant-specific — see "What's still manual" below). Required
-  for the reader flow only.
+  for the reader flow only; without it a reader payment is refused
+  (`no_affiliate_key`) and nothing is sent to SumUp.
+- `sumup_app_id` — the application identifier (App ID / Bundle ID) the
+  affiliate key was created for. Default `com.universaltill.pos`. Not a
+  secret; SumUp wants it sent together with the key. Change it only if the
+  key was registered for a different identifier.
 - `currency` — a picker (symbol + code + name; labels in EN/DE/TR). Default
   **Automatic**: the shop's own currency, read from the till through the core
   read view `shop.context.v2` (`view:shop` permission; the manifest asks for
@@ -129,13 +134,15 @@ keys); update the plugin by hand on each till, plugins do not auto-update.
 
 ## What's still manual
 
-**Farshid needs to register Universal Till as a SumUp integrator** (SumUp
-developer portal → Affiliate Keys) to get the `sumup_affiliate_key` value —
-this is a per-integration credential, not something a merchant configures
-themselves, so it should ship as a documented default once obtained rather
-than staying an empty per-merchant setting forever. Each merchant separately
-creates their own `sumup_api_key` + `sumup_merchant_code` and pairs their own
-reader for `sumup_reader_id`.
+The SumUp affiliate key (`sumup_affiliate_key`) is generated in the SumUp
+developer portal (Affiliate Keys) for the application identifier
+`com.universaltill.pos`, then entered per till in the plugin settings (the
+settings screen, never a file or the repo: a key inside a public plugin build
+is readable by anyone). SumUp requires it for card-present integrations; it
+is not an authorization mechanism. Until it is set, reader payments are
+refused with `no_affiliate_key`. Each merchant separately creates their own
+`sumup_api_key` + `sumup_merchant_code` and pairs their own reader for
+`sumup_reader_id`.
 
 ## Localization (ut-docs#1883, scoping note)
 
@@ -208,10 +215,15 @@ any live tip amount on a receipt as unconfirmed.
 ## Endpoints used (confirmed against developer.sumup.com, 2026-07-27)
 
 - `POST /v0.1/merchants/{merchant_code}/readers/{reader_id}/checkout` —
-  start a reader payment. **Needs sandbox verification**: the exact JSON
-  placement of the affiliate key (a top-level `"affiliate": {"key": ...}`
-  object) follows SumUp's docs description but wasn't confirmed against a
-  live response.
+  start a reader payment. The body carries `total_amount` and an
+  `affiliate` object `{app_id, key, foreign_transaction_id}`; `foreign_transaction_id`
+  is `ut-<till request id>-<start time>`. **NEEDS SANDBOX VERIFICATION**: this
+  follows SumUp's create-checkout reference (developer.sumup.com/api/readers/create-checkout,
+  `app_id` and `key` both required once `affiliate` is sent) but was not
+  confirmed against a live response.
+  If the reply to this call is lost, the reader is terminated and the sale is
+  looked up with `GET /v2.1/merchants/{code}/transactions?foreign_transaction_id=…`;
+  a payment found that way is approved, otherwise a re-tap of Pay settles it.
 - `GET /v2.1/merchants/{merchant_code}/transactions?client_transaction_id=…`
   — poll for the reader payment's outcome (`SUCCESSFUL`/`FAILED`/
   `CANCELLED`) and tip (`tip_amount`, see "Tips" above). **Needs sandbox
