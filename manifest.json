@@ -1,7 +1,7 @@
 {
   "id": "com.universaltill.payment-sumup",
   "name": "SumUp Card Payments",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Take card payments through SumUp. With a paired SumUp Solo/Air/3G reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert, and a tip the customer picks on the reader syncs back to the till automatically. With no reader configured it runs in test mode: no card is charged and nothing is sent to SumUp (amounts ending .13 decline, .99 time out, anything else approves). Refunding a SumUp reader sale on the till refunds the original transaction automatically (in test mode a refund is approved with nothing to send back). Cards are charged in your shop's currency; the currency setting can pin it, and a choice that does not match the till's currency is declined rather than charged. Set your SumUp API key, merchant code, and (for reader payments) an affiliate key in the settings.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
@@ -14,7 +14,8 @@
     "events:receive",
     "view:shop",
     "net:api.sumup.com",
-    "storage"
+    "storage",
+    "blob:own"
   ],
   "locales": [
     "en-US",

@@ -106,10 +106,26 @@ real ones:
 
 Refunding a SumUp sale on the till refunds the original transaction
 automatically (`POST /v0.1/me/refund/{txn_id}`), looked up by the
-transaction id saved when the original sale settled. In demo mode (no
+transaction id of the original sale (see "Finding the original transaction"
+below). In demo mode (no
 reader), a refund is a no-op approve — nothing real was ever charged, so
 there's nothing to refund against SumUp's API, and declining would
 incorrectly block a return in a demo/test install.
+
+### Finding the original transaction (v1.4.0, ut-docs#6438)
+
+The plugin finds the transaction in this order: the reference the till itself
+stored with the sale (`transaction_ref`, `original_payments`, newer till
+versions), then the plugin's own link file, then the per-sale keys written by
+v1.3.0 and older (still read, never written again). Until the till stores the
+reference itself, the plugin links each sale to its transaction in 256 fixed
+files in its own blob store (`blob:own`, at most 8 MiB, oldest first out). A
+sale that could not be linked safely (for example two card sales of the same
+amount settling at the same moment) is **not** linked; refunding it declines
+with `unknown_original_payment` and must be done in the SumUp dashboard. The
+plugin never guesses a transaction. Before v1.4.0 a till stopped linking new
+sales after about 1,000 card sales (the host allows a plugin 1,024 storage
+keys); update the plugin by hand on each till, plugins do not auto-update.
 
 ## What's still manual
 
