@@ -113,10 +113,15 @@ func isFailed(t *transactionPollEntry) bool {
 
 // run drives one authorize on the paired reader.
 //
-// NEEDS SANDBOX VERIFICATION: the affiliate object {app_id, key,
-// foreign_transaction_id} in the checkout body follows SumUp's create-
-// checkout reference (developer.sumup.com/api/readers/create-checkout) but
-// was not confirmed against a live sandbox.
+// Verified 2026-11-17 in the SumUp sandbox (Virtual Solo; no physical reader
+// tested): the checkout body, flat total_amount {currency, minor_unit, value}
+// plus affiliate {app_id, key, foreign_transaction_id}, is accepted with HTTP
+// 201. The create-checkout reference (developer.sumup.com/api/readers/
+// create-checkout) is authoritative; the affiliate-keys doc page still shows
+// an outdated {checkout:{amount}} wrapper. A lookup by foreign_transaction_id
+// answers 404 NOT_FOUND while the checkout is pending, then 200 with the
+// status. A decline and a terminate both end FAILED with no reason; a second
+// checkout while one is pending answers 422 READER_BUSY.
 //
 // NOT DONE: no tipping configuration is sent — whether the reader prompts
 // for a tip depends on the merchant's own SumUp settings; see README "Tips".

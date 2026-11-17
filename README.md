@@ -217,13 +217,21 @@ any live tip amount on a receipt as unconfirmed.
 - `POST /v0.1/merchants/{merchant_code}/readers/{reader_id}/checkout` —
   start a reader payment. The body carries `total_amount` and an
   `affiliate` object `{app_id, key, foreign_transaction_id}`; `foreign_transaction_id`
-  is `ut-<till request id>-<start time>`. **NEEDS SANDBOX VERIFICATION**: this
-  follows SumUp's create-checkout reference (developer.sumup.com/api/readers/create-checkout,
-  `app_id` and `key` both required once `affiliate` is sent) but was not
-  confirmed against a live response.
+  is `ut-<till request id>-<start time>`. **Verified 2026-11-17 in the SumUp
+  sandbox** (Virtual Solo only, no physical reader tested): this body is
+  accepted with HTTP 201. It follows SumUp's create-checkout reference
+  (developer.sumup.com/api/readers/create-checkout, `app_id` and `key` both
+  required once `affiliate` is sent), which is authoritative: SumUp's
+  affiliate-keys doc page still shows an outdated `{checkout:{amount}}`
+  wrapper. The sandbox affiliate key is separate from the live one. A second
+  checkout while one is pending answers 422 `READER_BUSY`.
   If the reply to this call is lost, the reader is terminated and the sale is
   looked up with `GET /v2.1/merchants/{code}/transactions?foreign_transaction_id=…`;
   a payment found that way is approved, otherwise a re-tap of Pay settles it.
+  Verified in the sandbox: that lookup answers 404 `NOT_FOUND` while the
+  checkout is pending, then 200 with the status. A declined card (11.00 GBP)
+  and a terminate (HTTP 202) both end `FAILED` with no reason, so they cannot
+  be told apart.
 - `GET /v2.1/merchants/{merchant_code}/transactions?client_transaction_id=…`
   — poll for the reader payment's outcome (`SUCCESSFUL`/`FAILED`/
   `CANCELLED`) and tip (`tip_amount`, see "Tips" above). **Needs sandbox
@@ -231,7 +239,9 @@ any live tip amount on a receipt as unconfirmed.
   wrapper) wasn't confirmed; the plugin handles both defensively.
 - `POST /v0.1/me/refund/{txn_id}` — refund, confirmed request/response shape
   including the major-unit decimal `amount` field and the 204-No-Content
-  success contract.
+  success contract. Sandbox 2026-11-17: the refund answers 204 and shows as a
+  separate history entry; the original transaction keeps `SUCCESSFUL`, so
+  refund state must be read from the history, not from the original's status.
 
 ## Test mode (demo, no reader)
 
@@ -250,3 +260,13 @@ run through `universal-till`'s actual `WasmRuntime.HandleEvent`.
 ```sh
 bash scripts/build.sh   # -> bin/plugin.wasm (GOOS=wasip1 GOARCH=wasm)
 ```
+
+## Verification status (2026-11-17)
+
+Verified in the SumUp **sandbox only**; no physical reader has been tested.
+Sandbox readers are Virtual Solo (virtual-solo.sumup.com), which is not a
+substitute for a physical Solo. It came online only in a clean browser window
+(a normal session got a 403 on its WebSocket) and only for a short while, so
+pair and run all tests right after getting the pairing code. Still unverified: tips, the
+`client_transaction_id` poll's response envelope, and the live affiliate key
+on a live reader.
