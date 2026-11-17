@@ -22,7 +22,7 @@ So this plugin has exactly one real production path (**with a reader
 configured**) and one **demo-only** fallback (no reader configured), not two
 real ones:
 
-- **With `sumup_reader_id` set**: drives a paired SumUp Solo/Air/3G reader
+- **With `sumup_reader_id` set**: drives a paired SumUp Solo reader
   via SumUp's Cloud API — starts a checkout on the reader, then polls the
   Transactions API for a terminal result (same shape as the Stripe plugin's
   Terminal-reader polling loop). The till waits 30 seconds for a card

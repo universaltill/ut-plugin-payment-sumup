@@ -7,7 +7,7 @@
 //
 // Two modes, chosen by settings:
 //   - READER (card-present) when `sumup_reader_id` is set: drives a paired
-//     SumUp Solo/Air/3G reader via SumUp's Cloud API — this is SumUp's actual
+//     SumUp Solo reader via SumUp's Cloud API — this is SumUp's actual
 //     product (unlike Stripe, SumUp has no synchronous online-charge API a
 //     till can confirm within one blocking call; card-present via a physical
 //     reader is the only real production path). Starts a checkout on the

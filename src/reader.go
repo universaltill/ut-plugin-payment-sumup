@@ -177,12 +177,17 @@ func (c *readerCharger) run() readerOutcome {
 		Data struct {
 			ClientTransactionID string `json:"client_transaction_id"`
 		} `json:"data"`
-		Message string `json:"message"`
+		// The 2026-11-17 sandbox note records the reply flat
+		// ({checkout_id, client_transaction_id}); the docs wrap it in data.
+		// Accept both: a wrong guess must not turn a started checkout into a
+		// "lost reply" decline.
+		FlatClientTransactionID string `json:"client_transaction_id"`
+		Message                 string `json:"message"`
 	}
 	if ok {
 		_ = json.Unmarshal(body, &checkout)
 	}
-	clientTxn := checkout.Data.ClientTransactionID
+	clientTxn := firstNonEmpty(checkout.Data.ClientTransactionID, checkout.FlatClientTransactionID)
 	if !ok || status >= 500 || (status >= 200 && status < 300 && clientTxn == "") {
 		// No usable reply (transport failure, SumUp 5xx, a 2xx without an
 		// id): the request may still have reached the reader, which would
