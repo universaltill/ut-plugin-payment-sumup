@@ -61,6 +61,21 @@ func storageSet(kPtr, kLen, vPtr, vLen uint32) int32
 //go:wasmimport ut storage_get
 func storageGet(kPtr, kLen, dstPtr, dstCap uint32) int32
 
+//go:wasmimport ut blob_put_open
+func blobPutOpen(nPtr, nLen uint32) int32
+
+//go:wasmimport ut blob_write
+func blobWrite(h int32, ptr, n uint32) int32
+
+//go:wasmimport ut blob_commit
+func blobCommit(h int32) int32
+
+//go:wasmimport ut blob_get_open
+func blobGetOpen(nPtr, nLen uint32) int32
+
+//go:wasmimport ut blob_read
+func blobRead(h int32, dstPtr, dstCap uint32) int32
+
 const apiBase = "https://api.sumup.com"
 
 func ptrOf(b []byte) (uint32, uint32) {
@@ -70,10 +85,11 @@ func ptrOf(b []byte) (uint32, uint32) {
 	return uint32(uintptr(unsafe.Pointer(&b[0]))), uint32(len(b))
 }
 
-func logf(format string, args ...any) {
-	msg := []byte(fmt.Sprintf(format, args...))
-	p, n := ptrOf(msg)
-	logWrite(p, n)
+func init() {
+	logHook = func(m string) {
+		p, n := ptrOf([]byte(m))
+		logWrite(p, n)
+	}
 }
 
 // setting reads one of the plugin's own settings. Grows the buffer once if the
@@ -120,24 +136,89 @@ func shopContext() shopInfo {
 	return shopInfo{Code: code, Decimals: dec, Known: ok}
 }
 
-func storagePut(key string, v []byte) {
+// hostStorage is the raw plugin storage; put reports the host's code.
+type hostStorage struct{}
+
+func (hostStorage) put(key string, v []byte) error {
 	kp, kl := ptrOf([]byte(key))
 	vp, vl := ptrOf(v)
-	storageSet(kp, kl, vp, vl)
-}
-
-func storageRead(key string) string {
-	kp, kl := ptrOf([]byte(key))
-	buf := make([]byte, 4096)
-	bp, bc := ptrOf(buf)
-	n := storageGet(kp, kl, bp, bc)
-	if n < 0 || int(n) > len(buf) {
-		return ""
+	if rc := storageSet(kp, kl, vp, vl); rc != 0 {
+		return fmt.Errorf("storage_set %q: host code %d", key, rc)
 	}
-	return string(buf[:n])
+	return nil
 }
 
-func saveTxn(v []byte) { storagePut("last_txn", v) }
+func (hostStorage) get(key string) string {
+	kp, kl := ptrOf([]byte(key))
+	v, _ := readGrow(func(dst []byte) int32 {
+		dp, dc := ptrOf(dst)
+		return storageGet(kp, kl, dp, dc)
+	})
+	return v
+}
+
+// hostBlobs is blob:own (ADR-0121). Codes: -1 no such blob, -2 permission not
+// granted, -4 bad name, -5 quota.
+type hostBlobs struct{}
+
+const maxBlobRead = 1 << 20
+
+func (hostBlobs) put(name string, b []byte) error {
+	np, nl := ptrOf([]byte(name))
+	h := blobPutOpen(np, nl)
+	if h < 0 {
+		return fmt.Errorf("blob_put_open %q: host code %d", name, h)
+	}
+	if len(b) > 0 {
+		bp, bl := ptrOf(b)
+		if n := blobWrite(h, bp, bl); n != int32(len(b)) {
+			return fmt.Errorf("blob_write %q: host code %d", name, n)
+		}
+	}
+	if rc := blobCommit(h); rc != 0 {
+		return fmt.Errorf("blob_commit %q: host code %d", name, rc)
+	}
+	return nil
+}
+
+func (hostBlobs) get(name string) ([]byte, bool, error) {
+	np, nl := ptrOf([]byte(name))
+	h := blobGetOpen(np, nl)
+	if h == -1 {
+		return nil, false, nil
+	}
+	if h < 0 {
+		return nil, false, fmt.Errorf("blob_get_open %q: host code %d", name, h)
+	}
+	var out []byte
+	buf := make([]byte, 16<<10)
+	for {
+		bp, bc := ptrOf(buf)
+		n := blobRead(h, bp, bc)
+		if n < 0 {
+			return nil, false, fmt.Errorf("blob_read %q: host code %d", name, n)
+		}
+		if n == 0 {
+			return out, true, nil // the host releases the handle at the end
+		}
+		out = append(out, buf[:n]...)
+		if len(out) > maxBlobRead {
+			return nil, false, fmt.Errorf("blob %q larger than %d bytes", name, maxBlobRead)
+		}
+	}
+}
+
+var (
+	pluginKV    kvStore = overflowKV{raw: hostStorage{}, blobs: hostBlobs{}}
+	pluginLinks         = linkStore{blobs: hostBlobs{}}
+)
+
+// persistResult is false for refund and settle events: only an authorize
+// answer is recorded in last_txn. curEventID is the authorize event's id.
+var (
+	persistResult = true
+	curEventID    string
+)
 
 // sumupCall performs one SumUp API request (JSON body, Bearer auth) and
 // returns the decoded response body and HTTP status. ok is false only on a
@@ -196,29 +277,39 @@ func approveWithTip(amount int64, currency, authCode string, tipAmount int64) {
 	if tipAmount > 0 {
 		fields["tip_amount"] = tipAmount
 	}
+	if persistResult {
+		// transaction_ref: core stores it with the sale and hands it back on a
+		// refund (ut-docs#6438); auth_code keeps its meaning.
+		fields["transaction_ref"] = authCode
+		saveAuthorizeResult(pluginKV, fields, &recentEntry{
+			ID: curEventID, Ref: authCode, Amount: amount, Tip: tipAmount, At: time.Now().Unix(),
+		})
+	}
 	result, _ := json.Marshal(fields)
-	saveTxn(result)
 	if tipAmount > 0 {
-		logf("sumup: APPROVED %d %s (%s), tip %d", amount, currency, authCode, tipAmount)
+		logf("sumup: APPROVED %d %s (%s), tip %d", amount, currency, maskRef(authCode), tipAmount)
 	} else {
-		logf("sumup: APPROVED %d %s (%s)", amount, currency, authCode)
+		logf("sumup: APPROVED %d %s (%s)", amount, currency, maskRef(authCode))
 	}
 	_, _ = os.Stdout.Write(append(result, '\n'))
 	os.Exit(approvedExit)
 }
 
 func decline(amount int64, currency, reason string) {
-	result, _ := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"provider": "sumup", "amount": amount, "currency": currency,
 		"outcome": "declined", "decline_code": reason,
-	})
-	saveTxn(result)
-	logf("sumup: DECLINED %d %s (%s)", amount, currency, reason)
+	}
+	if persistResult {
+		saveAuthorizeResult(pluginKV, fields, nil)
+	}
+	result, _ := json.Marshal(fields)
+	logf("sumup: DECLINED %d %s (%s)", amount, currency, scrubRefs(reason))
 	_, _ = os.Stdout.Write(append(result, '\n'))
 	os.Exit(declinedExit)
 }
 
-// hostSumUp, realClock and pluginKV wire reader.go's flow to the host.
+// hostSumUp and realClock wire reader.go's flow to the host.
 type hostSumUp struct{ apiKey string }
 
 func (h hostSumUp) call(method, path string, body []byte) ([]byte, int, bool) {
@@ -230,40 +321,21 @@ type realClock struct{}
 func (realClock) now() time.Time        { return time.Now() }
 func (realClock) sleep(d time.Duration) { time.Sleep(d) }
 
-type pluginKV struct{}
-
-func (pluginKV) get(k string) string    { return storageRead(k) }
-func (pluginKV) put(k string, v []byte) { storagePut(k, v) }
-
 func main() {
 	start := time.Now() // reader.go's deadlines count from here (ut-docs#6304)
 	raw, _ := io.ReadAll(os.Stdin)
-	var ev struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Payload struct {
-			Amount         int64  `json:"amount"`
-			SaleID         string `json:"sale_id"`
-			OriginalSaleID string `json:"original_sale_id"`
-			Currency       string `json:"currency"`
-		} `json:"payload"`
-	}
-	_ = json.Unmarshal(raw, &ev)
+	ev := parseEvent(raw)
 	amount := ev.Payload.Amount
+	curEventID = ev.ID
 
-	// Post-sale settle notification: link the sale id to the transaction we
-	// just authorized so a later refund can find it. Not blocking.
+	// Post-sale settle notification: when core already holds the reference
+	// (transaction_ref) nothing is stored; otherwise link the sale to its
+	// approval in a link bucket (links.go, recent.go). Never blocks the sale.
 	if strings.HasSuffix(ev.Type, ".requested") {
-		var last struct {
-			AuthCode string `json:"auth_code"`
-		}
-		_ = json.Unmarshal([]byte(storageRead("last_txn")), &last)
-		if ev.Payload.SaleID != "" && last.AuthCode != "" {
-			storagePut("sale_txn:"+ev.Payload.SaleID, []byte(last.AuthCode))
-			logf("sumup: sale %s settled with %s", ev.Payload.SaleID, last.AuthCode)
-		}
+		settleSale(pluginKV, pluginLinks, ev.Payload, time.Now())
 		os.Exit(0)
 	}
+	persistResult = !strings.HasSuffix(ev.Type, ".refund")
 
 	readerID := strings.TrimSpace(setting("sumup_reader_id"))
 
@@ -299,7 +371,7 @@ func main() {
 		if apiKey == "" {
 			decline(amount, currency, "no_api_key")
 		}
-		refundTxn(apiKey, ev.Payload.OriginalSaleID, amount, currency)
+		refundTxn(apiKey, ev.Payload, currency)
 		return
 	}
 
@@ -326,7 +398,7 @@ func main() {
 		decline(amount, currency, "no_merchant_code")
 	}
 	c := &readerCharger{
-		api: hostSumUp{apiKey: apiKey}, clk: realClock{}, kv: pluginKV{},
+		api: hostSumUp{apiKey: apiKey}, clk: realClock{}, kv: pluginKV,
 		affiliateKey: strings.TrimSpace(setting("sumup_affiliate_key")),
 		merchantCode: merchantCode, currency: currency, readerID: readerID,
 		requestID: ev.ID, amount: amount, start: start,
@@ -338,30 +410,14 @@ func main() {
 	}
 }
 
-// refundTxn refunds (part of) the original sale's transaction. The
-// transaction id was stored at settle time under sale_txn:<sale_id>; without
-// it we must decline — refunding an unknown transaction is not possible.
-func refundTxn(apiKey, originalSaleID string, amount int64, currency string) {
-	txnID := strings.TrimSpace(storageRead("sale_txn:" + originalSaleID))
-	if originalSaleID == "" || txnID == "" {
-		decline(amount, currency, "unknown_original_transaction")
+// refundTxn refunds (part of) the original sale's transaction, found via
+// core's original_payments, the link bucket or the legacy key (refund.go).
+// Without a reference it declines: guessing a transaction would refund the
+// wrong customer.
+func refundTxn(apiKey string, p eventPayload, currency string) {
+	id, reason := refundSale(hostSumUp{apiKey: apiKey}, pluginKV, pluginLinks, p)
+	if reason != "" {
+		decline(p.Amount, currency, reason)
 	}
-	reqBody, _ := json.Marshal(map[string]any{"amount": minorToMajor(amount)})
-	body, status, ok := sumupCall("POST", "/v0.1/me/refund/"+txnID, apiKey, reqBody)
-	if !ok {
-		decline(amount, currency, "network_error")
-	}
-	// The docs describe 204 No Content on success; treat any 2xx as success
-	// rather than pinning to exactly 204, in case a future API version
-	// starts returning a 200 with a body.
-	if status >= 200 && status < 300 {
-		logf("sumup: REFUNDED %d on %s", amount, txnID)
-		approve(amount, currency, txnID)
-	}
-	var errResp struct {
-		Message string `json:"message"`
-		Error   string `json:"error_code"`
-	}
-	_ = json.Unmarshal(body, &errResp)
-	decline(amount, currency, firstNonEmpty(errResp.Error, errResp.Message, "refund_failed"))
+	approve(p.Amount, currency, id)
 }

@@ -19,8 +19,11 @@ func (c *fakeClock) sleep(d time.Duration) { c.t = c.t.Add(d) }
 
 type memKV map[string]string
 
-func (m memKV) get(k string) string    { return m[k] }
-func (m memKV) put(k string, v []byte) { m[k] = string(v) }
+func (m memKV) get(k string) string { return m[k] }
+func (m memKV) put(k string, v []byte) error {
+	m[k] = string(v)
+	return nil
+}
 
 // fakeSumUp simulates one merchant with one Solo reader, following SumUp's
 // published Cloud API docs (not a kinder model): the transactions lookup
