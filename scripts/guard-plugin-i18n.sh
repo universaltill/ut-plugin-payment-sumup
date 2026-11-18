@@ -7,9 +7,11 @@
 # ADR-0010 / plugin-architecture.md §7 documents — for the same drift class
 # universal-till's own scripts/ci/guard-i18n.sh catches in core:
 #
-#   1. every non-base locale file has EXACTLY the same key set as
-#      locales/en.json — no missing translations, no orphan keys
-#      (mirrors guard-i18n.sh check #2).
+#   1. no non-base locale file has an ORPHAN key (one locales/en.json lacks).
+#      A key MISSING from a non-base locale is only a printed note, not a
+#      failure: code PRs add English only, other languages come later
+#      (Weblate), and the till falls back to en.json (ADR-0160 §2,
+#      ut-docs#6570).
 #   2. every locale value is a flat string — a nested JSON object would
 #      silently defeat check 1's key-set comparison (it only ever looks at
 #      TOP-level keys, so drift inside a nested object is invisible to it)
@@ -55,11 +57,12 @@
 # plugin's `page`-type entries (pre-existing, plugin_page.go) and
 # `export`/`report`-type entries (this card, settings.html) resolve their
 # manifest label through core's `T` via this locales/*.json overlay
-# mechanism; `payment`/`theme`/`button`-type entry labels and every
-# plugin's generic settings-field labels do NOT — those still render
-# whatever literal string the manifest carries, with no translation path
-# at all (a separate, known, cross-cutting core gap, tracked outside this
+# mechanism; `payment`/`theme`/`button`-type entry labels do NOT — those
+# still render whatever literal string the manifest carries, with no
+# translation path at all (a separate, known, cross-cutting core gap, tracked outside this
 # card — see architecture/plugin-architecture.md §7's own note on this).
+# Settings-field label/help/option keys DO resolve through T since
+# ut-docs#2832.
 # If a plugin's own UI surface grows a template/render path later, extend
 # this template rather than assuming key-set parity alone still covers it.
 #
@@ -272,11 +275,14 @@ for path in locale_files:
     ks = set(locales[path].keys())
     only_base = sorted(base - ks)
     only_loc = sorted(ks - base)
-    if only_base or only_loc:
-        fail = True
-        print(f"guard-plugin-i18n: {path} differs from {base_path}:")
+    if only_base:
+        # Not a failure (ADR-0160 §2): the till falls back to en.json.
+        print(f"guard-plugin-i18n: note: {path} lacks {len(only_base)} key(s) from {base_path} (falls back to English):")
         for k in only_base:
             print("  missing:", k)
+    if only_loc:
+        fail = True
+        print(f"guard-plugin-i18n: {path} has keys not in {base_path}:")
         for k in only_loc:
             print("  orphan :", k)
 

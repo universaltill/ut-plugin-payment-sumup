@@ -44,18 +44,18 @@ real ones:
 
 ## Configure (plugin settings)
 
-- `sumup_api_key` — the merchant's own SumUp API key (created in the SumUp
+- **API key** (`sumup_api_key`) — the merchant's own SumUp API key (created in the SumUp
   developer portal, one key per merchant — nothing hardcoded).
-- `sumup_merchant_code` — the merchant's SumUp merchant code.
-- `sumup_affiliate_key` — Universal Till's own integrator/affiliate key
+- **Merchant code** (`sumup_merchant_code`) — the merchant's SumUp merchant code.
+- **Affiliate key** (`sumup_affiliate_key`) — Universal Till's own integrator/affiliate key
   (**not** merchant-specific — see "What's still manual" below). Required
   for the reader flow only; without it a reader payment is refused
   (`no_affiliate_key`) and nothing is sent to SumUp.
-- `sumup_app_id` — the application identifier (App ID / Bundle ID) the
+- **Affiliate app ID** (`sumup_app_id`) — the application identifier (App ID / Bundle ID) the
   affiliate key was created for. Default `com.universaltill.pos`. Not a
   secret; SumUp wants it sent together with the key. Change it only if the
   key was registered for a different identifier.
-- `currency` — a picker (symbol + code + name; labels in EN/DE/TR). Default
+- **Card payment currency** (`currency`) — a picker (symbol + code + name; labels in EN/DE/TR). Default
   **Automatic**: the shop's own currency, read from the till through the core
   read view `shop.context.v2` (`view:shop` permission; the manifest asks for
   till 0.31.9+, the first release known to carry both the picker and the
@@ -65,7 +65,7 @@ real ones:
   `currency_mismatch` instead of silently charged in euros (switch the
   setting to Automatic) - but only while the view is readable; if the
   operator denies `view:shop` the old explicit `eur` is used as before.
-- `sumup_reader_id` (register-scoped) — the paired reader this specific till
+- **Card reader ID** (`sumup_reader_id`) (register-scoped) — the paired reader this specific till
   drives. Leave unset for demo mode.
 
 ## Currencies
@@ -145,6 +145,13 @@ refused with `no_affiliate_key`. Each merchant separately creates their own
 `sumup_reader_id`.
 
 ## Localization (ut-docs#1883, scoping note)
+
+Since v1.5.3 every setting also has a `label` and `help` key
+(`payment_sumup.<name>.label` / `.help`) in `locales/en.json`, so the settings
+page shows names instead of raw keys (hover shows the key). These new keys are
+English only: other languages come later through Weblate (ADR-0160 §2), and
+German/Turkish tills show English for them meanwhile (the till falls back to
+`en.json`). `scripts/guard-plugin-i18n.sh` only notes such missing keys.
 
 As of v1.2.0 the plugin ships `locales/{en,de,tr}.json` for the currency
 setting's label, help and option labels (the settings page resolves them).
