@@ -296,14 +296,11 @@ func approveWithTip(amount int64, currency, authCode string, tipAmount int64) {
 }
 
 func decline(amount int64, currency, reason string) {
-	fields := map[string]any{
-		"provider": "sumup", "amount": amount, "currency": currency,
-		"outcome": "declined", "decline_code": reason,
-	}
+	fields := declineFields(amount, currency, reason)
 	if persistResult {
 		saveAuthorizeResult(pluginKV, fields, nil)
 	}
-	result, _ := json.Marshal(fields)
+	result := declineAnswer(amount, currency, reason)
 	logf("sumup: DECLINED %d %s (%s)", amount, currency, scrubRefs(reason))
 	_, _ = os.Stdout.Write(append(result, '\n'))
 	os.Exit(declinedExit)
@@ -327,6 +324,7 @@ func main() {
 	ev := parseEvent(raw)
 	amount := ev.Payload.Amount
 	curEventID = ev.ID
+	ev.Payload.EventID = ev.ID
 
 	// Post-sale settle notification: when core already holds the reference
 	// (transaction_ref) nothing is stored; otherwise link the sale to its
@@ -359,28 +357,25 @@ func main() {
 	// branching below — a refund is never a "demo amount" decision, it
 	// always needs to either really refund (reader/API configured) or
 	// no-op-approve (nothing real was ever charged in demo mode).
+	testMode := isTestMode(setting(testModeSetting))
+	apiKey := strings.TrimSpace(setting("sumup_api_key"))
 	if strings.HasSuffix(ev.Type, ".refund") {
-		if readerID == "" {
-			// DEMO mode: no reader was ever configured, so the original
-			// "charge" was never a real SumUp transaction — nothing to
-			// refund against SumUp's API, and declining would incorrectly
-			// block a return in a demo/test install.
-			approve(amount, currency, "demo-refund")
-		}
-		apiKey := strings.TrimSpace(setting("sumup_api_key"))
-		if apiKey == "" {
-			decline(amount, currency, "no_api_key")
-		}
-		refundTxn(apiKey, ev.Payload, currency)
+		// Whether a refund goes to SumUp depends on the reference, never on
+		// the reader setting: a real reference always goes to the API, a
+		// demo- one never does (ut-docs#6599).
+		refundTxn(apiKey, testMode, ev.Payload, currency)
 		return
 	}
 
 	// From here on this is a payment.sumup.authorize call.
 
-	// DEMO mode: no reader configured, so there is no real production path
-	// (see package doc comment) — deterministic outcome, no network call,
-	// same contract as ut-plugin-payment-demo.
-	if readerID == "" {
+	// Demo only when test mode is explicitly on; a missing reader or key
+	// declines instead of approving (ut-docs#6599).
+	mode, why := authorizeMode(testMode, apiKey, readerID)
+	if why != "" {
+		decline(amount, currency, why)
+	}
+	if mode == "demo" {
 		if ok, code := demoAuthorize(amount); ok {
 			approve(amount, currency, code)
 		} else {
@@ -389,10 +384,6 @@ func main() {
 		return
 	}
 
-	apiKey := strings.TrimSpace(setting("sumup_api_key"))
-	if apiKey == "" {
-		decline(amount, currency, "no_api_key")
-	}
 	merchantCode := strings.TrimSpace(setting("sumup_merchant_code"))
 	if merchantCode == "" {
 		decline(amount, currency, "no_merchant_code")
@@ -415,8 +406,15 @@ func main() {
 // core's original_payments, the link bucket or the legacy key (refund.go).
 // Without a reference it declines: guessing a transaction would refund the
 // wrong customer.
-func refundTxn(apiKey string, p eventPayload, currency string) {
-	id, reason := refundSale(hostSumUp{apiKey: apiKey}, pluginKV, pluginLinks, p)
+func refundTxn(apiKey string, testMode bool, p eventPayload, currency string) {
+	var api sumupAPI // nil without a key: a real reference then declines no_api_key
+	if apiKey != "" {
+		api = hostSumUp{apiKey: apiKey}
+	}
+	id, reason := refundSale(api, pluginKV, pluginLinks, p)
+	if reason == declineUnknownOriginal && testMode {
+		approve(p.Amount, currency, "demo-refund") // test mode: nothing real to send back
+	}
 	if reason != "" {
 		decline(p.Amount, currency, reason)
 	}

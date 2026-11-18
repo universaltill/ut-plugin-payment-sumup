@@ -37,7 +37,7 @@ real ones:
   started and the reader is idle, then starts fresh. If you change the basket
   instead, check the reader or the SumUp dashboard before charging again
   (ut-docs#6304).
-- **With no reader configured**: deterministic demo outcomes, no network
+- **With Test mode switched on** (`sumup_test_mode`, default off; v1.6.0): deterministic demo outcomes, no network
   call — same contract as `ut-plugin-payment-demo` (amount ending **.13**
   declines, **.99** times out, anything else approves). Useful for staff
   training/E2E tests, **not a real payment path**.
@@ -112,10 +112,14 @@ real ones:
 Refunding a SumUp sale on the till refunds the original transaction
 automatically (`POST /v0.1/me/refund/{txn_id}`), looked up by the
 transaction id of the original sale (see "Finding the original transaction"
-below). In demo mode (no
-reader), a refund is a no-op approve — nothing real was ever charged, so
-there's nothing to refund against SumUp's API, and declining would
-incorrectly block a return in a demo/test install.
+below). A refund whose reference is
+not a `demo-` one always goes to SumUp, whatever the reader setting; a `demo-`
+reference (a test-mode sale) is approved with nothing to send back. SumUp's
+refund call has no idempotency key, so a refund sent for an event id is
+recorded (last 8): a repeat is answered from it, and a retry after a lost
+reply goes to the same transaction only and, if it was a partial refund,
+declines `refund_outcome_unknown` (check the SumUp dashboard) instead of
+risking paying twice (v1.6.0, ut-docs#6598).
 
 ### Finding the original transaction (v1.4.0, ut-docs#6438)
 
@@ -250,7 +254,10 @@ any live tip amount on a receipt as unconfirmed.
   separate history entry; the original transaction keeps `SUCCESSFUL`, so
   refund state must be read from the history, not from the original's status.
 
-## Test mode (demo, no reader)
+## Test mode (setting `sumup_test_mode`, default off)
+
+Without test mode, no reader id declines `no_reader` (API key set) or
+`no_api_key`; it is never a silent demo approve (ut-docs#6599).
 
 Deterministic outcomes, like a demo terminal — no real money, no network
 call:
