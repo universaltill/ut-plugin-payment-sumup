@@ -403,7 +403,7 @@ func TestP9_SplitTenderLegs(t *testing.T) {
 	if _, dec := w.refund(api, eventPayload{Amount: 400, OriginalPayments: legs}); dec != "" || fmt.Sprint(api.refundedPIs()) != "[txn_1 txn_2]" {
 		t.Fatalf("400 -> %v dec=%q", api.refundedPIs(), dec)
 	}
-	api = &refundAPI{answers: map[string]int{"txn_1": 500}}
+	api = &refundAPI{answers: map[string]int{"txn_1": 400}}
 	if _, dec := w.refund(api, eventPayload{Amount: 400, OriginalPayments: legs}); dec != "NOT_REFUNDABLE" || len(api.calls) != 1 {
 		t.Fatalf("other error must decline without trying the next leg: dec=%q calls=%v", dec, api.calls)
 	}

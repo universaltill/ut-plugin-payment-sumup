@@ -8,7 +8,7 @@
   "payment_sumup.app_id.label": "Affiliate app ID",
   "payment_sumup.app_id.help": "The app ID the affiliate key was made for. Leave the default unless told otherwise.",
   "payment_sumup.reader_id.label": "Card reader ID",
-  "payment_sumup.reader_id.help": "The SumUp Solo reader paired with this till. Leave empty for test mode: no card is charged.",
+  "payment_sumup.reader_id.help": "The SumUp Solo reader paired with this till. Required for card payments: without it a payment is declined (unless Test mode is on).",
   "payment_sumup.currency.label": "Card payment currency",
   "payment_sumup.currency.help": "The currency SumUp charges in. Automatic uses your shop's currency. A manual choice must match the currency the till sells in, otherwise card payments are declined rather than charged in the wrong currency.",
   "payment_sumup.currency.opt.auto": "Automatic (use the shop's currency)",
@@ -26,5 +26,9 @@
   "payment_sumup.currency.opt.pln": "zł PLN – Polish zloty",
   "payment_sumup.currency.opt.ron": "lei RON – Romanian leu",
   "payment_sumup.currency.opt.sek": "kr SEK – Swedish krona",
-  "payment_sumup.currency.opt.usd": "$ USD – US dollar"
+  "payment_sumup.currency.opt.usd": "$ USD – US dollar",
+  "payment_sumup.test_mode.label": "Test mode",
+  "payment_sumup.test_mode.help": "On: no card is charged and nothing is sent to SumUp (amounts ending .13 decline, .99 time out, anything else approves). Off (default): real payments only.",
+  "payment_sumup.test_mode.opt.off": "Off",
+  "payment_sumup.test_mode.opt.on": "On (no real charge)"
 }

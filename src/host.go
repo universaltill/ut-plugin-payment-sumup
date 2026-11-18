@@ -108,6 +108,7 @@ type eventPayload struct {
 	AuthorizeRequestID string        `json:"authorize_request_id"`
 	TransactionRef     string        `json:"transaction_ref"`
 	OriginalPayments   []origPayment `json:"original_payments"`
+	EventID            string        `json:"-"` // set from the event envelope
 }
 
 type event struct {
