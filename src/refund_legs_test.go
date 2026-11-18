@@ -300,3 +300,50 @@ func TestLegsLogsMasked(t *testing.T) {
 	}
 	noRawRef(t, *lines, "txn-AAAA1111", "txn-BBBB2222")
 }
+
+// Reviewer (ut-docs#6603): a stored per-leg record for this event id whose
+// legs differ from the plan (ref or amount) is never resumed or overwritten.
+func TestLegsRecordMismatchUnknown(t *testing.T) {
+	stored := lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000)))
+	cases := map[string]eventPayload{
+		"amount": lp(5000, "e1", leg("txn-A", 3000, 0, ra(2500)), leg("txn-B", 2500, 0, ra(2500))),
+		"ref":    lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-C", 2000, 0, ra(2000))),
+		"count":  lp(3000, "e1", leg("txn-A", 3000, 0, ra(3000))),
+	}
+	for name, p := range cases {
+		t.Run(name, func(t *testing.T) {
+			api := newLegFake(map[string]int64{"txn-A": 3000, "txn-B": 2000, "txn-C": 2000})
+			api.failNet["txn-B"] = true // A done, B left "sending"
+			kv, links := legEnv()
+			if _, dec := refundSale(api, kv, links, stored); dec != declineRefundPartial {
+				t.Fatalf("setup dec=%q", dec)
+			}
+			before, n := kv[refundsKey], len(api.calls)
+			if _, dec := refundSale(api, kv, links, p); dec != declineRefundUnknown || len(api.calls) != n {
+				t.Fatalf("dec=%q new calls=%d", dec, len(api.calls)-n)
+			}
+			if kv[refundsKey] != before {
+				t.Errorf("record changed: %s", kv[refundsKey])
+			}
+		})
+	}
+}
+
+// Reviewer: the overflow guard is the only thing declining a sum that wraps
+// to exactly p.Amount.
+func TestLegsSumOverflowGuard(t *testing.T) {
+	big := int64(1) << 62
+	p := lp(-big, "e", leg("a", big, 0, ra(big)), leg("b", big, 0, ra(big)), leg("c", big, 0, ra(big)))
+	api := newLegFake(map[string]int64{})
+	kv, links := legEnv()
+	if _, dec := refundSale(api, kv, links, p); dec != declineInvalidRefundAmount || len(api.calls) != 0 {
+		t.Fatalf("dec=%q calls=%v", dec, api.calls)
+	}
+}
+
+// Reviewer: the leg cap is the documented 16, not just "whatever the const is".
+func TestLegsCapIsSixteen(t *testing.T) {
+	if maxRefundLegs != 16 {
+		t.Fatalf("maxRefundLegs=%d; README, CLAUDE.md and the ut-docs contract say 16", maxRefundLegs)
+	}
+}
