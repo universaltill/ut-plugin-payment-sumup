@@ -121,6 +121,25 @@ reply goes to the same transaction only and, if it was a partial refund,
 declines `refund_outcome_unknown` (check the SumUp dashboard) instead of
 risking paying twice (v1.6.0, ut-docs#6598).
 
+**Split-tender refunds (v1.7.0, ut-docs#6603).** When the original sale used
+two or more SumUp payments, the till sends each one's own `refund_amount`
+(minor units). The plugin then refunds exactly that on each transaction, in
+order, and never chooses a transaction itself. Nothing is sent unless the whole
+allocation is valid: a missing or non-positive amount, an amount above the
+leg's amount plus tip, a total that differs from the refund, or a missing
+reference declines `invalid_refund_amount` / `unknown_original_payment`; more
+than 16 legs declines `too_many_original_payments`. If a later leg fails after
+an earlier one was refunded, the answer is `refund_partial` (money has already
+moved; nothing is rolled back). Repeating the same refund finishes only the
+legs not yet done, from the same `refunds` record (still one entry per event
+id, last 8, now with a per-leg state). A leg whose reply was lost is resent
+only if it is a full refund of that leg; a partial one declines
+`refund_outcome_unknown`. Without `refund_amount` the single-transaction
+behaviour above is unchanged, and records written by v1.6.0 are still read.
+Downgrading to v1.6.0 after a split refund is not supported. Until the till
+shows these codes, it shows its generic "declined" text for them. Tested
+against fakes only, not a live SumUp account.
+
 ### Finding the original transaction (v1.4.0, ut-docs#6438)
 
 The plugin finds the transaction in this order: the reference the till itself
