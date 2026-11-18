@@ -52,7 +52,18 @@ const (
 type refundRecord struct {
 	ID    string `json:"id"`
 	Ref   string `json:"ref"`
-	State string `json:"state"` // "sending" (reply not seen) or "done"
+	State string `json:"state"` // "sending" (reply not seen) or "done"; per-leg: "legs" or "done"
+	// Legs is set only by a per-leg refund (v1.7.0, ut-docs#6603); a v1.6.0
+	// record has none and is read as one whole-amount refund on Ref.
+	Legs []legRecord `json:"legs,omitempty"`
+}
+
+// legRecord is one leg of a per-leg refund; State "" = not sent, "sending",
+// "done".
+type legRecord struct {
+	Ref    string `json:"ref"`
+	Amount int64  `json:"amount"`
+	State  string `json:"state,omitempty"`
 }
 
 func loadRefundRecords(kv kvStore) []refundRecord {
@@ -104,6 +115,9 @@ func legTotal(p eventPayload, ref string) int64 {
 // one cannot be told apart from a second refund, so it declines
 // refund_outcome_unknown rather than risk paying twice.
 func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnID, decline string) {
+	if perLegMode(p) {
+		return refundLegs(api, kv, p)
+	}
 	if p.EventID != "" {
 		for _, rec := range loadRefundRecords(kv) {
 			if rec.ID != p.EventID {
