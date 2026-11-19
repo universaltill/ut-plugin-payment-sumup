@@ -335,7 +335,25 @@ func main() {
 	}
 	persistResult = !strings.HasSuffix(ev.Type, ".refund")
 
-	readerID := strings.TrimSpace(setting("sumup_reader_id"))
+	// Reader state for the till's picker (ut-docs#6566): read-only, exit 0.
+	if strings.HasSuffix(ev.Type, ".readers") {
+		persistResult = false
+		readersHook(ev.Payload)
+	}
+
+	// Reader (ut-docs#6566): the till's per-call reader_id wins, a missing one
+	// falls back to the setting. A malformed one declines, no fallback; this
+	// only concerns authorize (a refund goes by transaction_ref).
+	var readerID string
+	if !strings.HasSuffix(ev.Type, ".refund") {
+		var readerDecline string
+		readerID, readerDecline = chooseReader(ev.Payload.ReaderID, setting("sumup_reader_id"))
+		if readerDecline != "" {
+			decline(amount, "", readerDecline)
+		}
+	} else {
+		readerID = strings.TrimSpace(setting("sumup_reader_id"))
+	}
 
 	// Currency: the saved choice (default "auto" = the shop's own currency
 	// via shop.context.v2), checked against the sale's currency. In test
@@ -400,6 +418,31 @@ func main() {
 	} else {
 		decline(amount, currency, out.reason)
 	}
+}
+
+// readersHook answers payment.sumup.readers and exits 0.
+func readersHook(p eventPayload) {
+	var api sumupAPI
+	if k := strings.TrimSpace(setting("sumup_api_key")); k != "" {
+		api = hostSumUp{apiKey: k}
+	}
+	var out []byte
+	if api == nil {
+		rows := []readerState{}
+		if p.Op == "state" {
+			for i, r := range p.Readers {
+				if i >= maxStateReaders {
+					break
+				}
+				rows = append(rows, readerState{ReaderID: r, State: "unknown", Reason: "no_api_key"})
+			}
+		}
+		out, _ = json.Marshal(map[string]any{"readers": rows})
+	} else {
+		out = readersAnswer(api, strings.TrimSpace(setting("sumup_merchant_code")), p)
+	}
+	_, _ = os.Stdout.Write(append(out, '\n'))
+	os.Exit(0)
 }
 
 // refundTxn refunds (part of) the original sale's transaction, found via

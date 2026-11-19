@@ -155,6 +155,34 @@ plugin never guesses a transaction. Before v1.4.0 a till stopped linking new
 sales after about 1,000 card sales (the host allows a plugin 1,024 storage
 keys); update the plugin by hand on each till, plugins do not auto-update.
 
+## Reader per call and reader state (v1.8.0, ut-docs#6566)
+
+A till with a reader registry names the reader for each card sale (`reader_id`
+in the authorize payload). The plugin uses it instead of `sumup_reader_id`;
+with no `reader_id` (an older till, or a single-reader till) it uses the
+setting exactly as before, so v1.x stays backward compatible, and with no id
+anywhere the decisions are unchanged (`no_reader`, or demo in test mode). The
+id must be 1 to 64 letters, digits, `_` or `-` (ids seen are `rdr_...`; the
+prefix is not enforced because it is unverified against the live API). A
+payload id that does not match is declined with `invalid_reader` before any
+SumUp call, and the setting is **not** used instead (that would charge a
+different physical reader). The id goes into a SumUp URL path, which is why it
+is checked.
+
+The plugin also answers the read-only hook `payment.sumup.readers`
+(`{"op":"state","readers":["rdr_..."]}`, at most 16 per call) from
+`GET /v0.1/merchants/{code}/readers/{id}/status`: ONLINE and IDLE is `ready`,
+ONLINE in any other state is `busy`, OFFLINE is `offline`, a 404 is `offline`
+with `reader_unreachable`, and anything unclear (or a rejected key) is
+`unknown`. Nothing is changed on the reader. The status shape is the one the
+plugin already relies on for its retry check; it is not verified against a
+physical reader.
+
+Refunds still go by the original transaction (`transaction_ref`). A `reader_id`
+on `original_payments[]` is accepted and ignored: a removed or offline reader
+never blocks a refund. Amounts to the reader checkout stay integer minor
+units; reader ids are logged masked at most.
+
 ## What's still manual
 
 The SumUp affiliate key (`sumup_affiliate_key`) is generated in the SumUp
