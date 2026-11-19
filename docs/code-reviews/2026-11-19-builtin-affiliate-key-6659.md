@@ -35,7 +35,7 @@
 - Review record: this file.
 
 **Deferred.** All three are tracked on ut-docs#6659, which stays open.
-- Slice 2: the owner sets the GitHub secret `SUMUP_AFFILIATE_KEY` from Key Vault `sumup-affiliate-key`, then re-runs the v1.9.0 release. Until then the auto-tagged release fails at the guard, as intended.
+- Slice 2 (SUPERSEDED by v1.9.1: the key is hard-coded, no secret to set): the owner sets the GitHub secret `SUMUP_AFFILIATE_KEY` from Key Vault `sumup-affiliate-key`, then re-runs the v1.9.0 release. Until then the auto-tagged release fails at the guard, as intended.
 - Release note.
 - Slice 3: sandbox and live reader verification.
 

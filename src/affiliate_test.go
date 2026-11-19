@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// ut-docs#6659: Universal Till's affiliate key is built into the plugin at
-// link time (scripts/build.sh, -X main.builtinAffiliateKey). These tests only
+// ut-docs#6659: Universal Till's affiliate key is a hard-coded constant
+// (src/affiliate.go, v1.9.1). These tests only
 // ever use fake values.
 
 func setBuiltin(t *testing.T, v string) {
@@ -19,9 +19,15 @@ func setBuiltin(t *testing.T, v string) {
 	t.Cleanup(func() { builtinAffiliateKey = old })
 }
 
-func TestAffiliateKeyEmptyByDefault(t *testing.T) {
-	if got := affiliateKey(); got != "" {
-		t.Fatalf("a keyless build must have an empty built-in key, got %q", got)
+func TestAffiliateKeyIsHardCodedAndWellFormed(t *testing.T) {
+	got := affiliateKey()
+	if got == "" || got != universalTillAffiliateKey {
+		t.Fatal("the shipped build must carry the hard-coded affiliate key")
+	}
+	for _, r := range got {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == '-') {
+			t.Fatal("affiliate key has a character outside [A-Za-z0-9_.-]")
+		}
 	}
 }
 
@@ -61,21 +67,21 @@ func TestAffiliateConfigWiresBuiltinKeyAndAppID(t *testing.T) {
 	}
 }
 
-func TestAffiliateConfigKeylessIsEmpty(t *testing.T) {
+func TestAffiliateConfigBlankIsEmpty(t *testing.T) {
 	setBuiltin(t, "")
 	if key, _ := affiliateConfig(func(string) string { return "x" }); key != "" {
-		t.Fatalf("keyless build must give an empty key, got %q", key)
+		t.Fatalf("blank-key build must give an empty key, got %q", key)
 	}
 }
 
-func TestKeylessBuildStillRefusesWithoutCallingSumUp(t *testing.T) {
+func TestBlankKeyStillRefusesWithoutCallingSumUp(t *testing.T) {
 	setBuiltin(t, "")
 	clk, f, kv := newWorld()
 	c := newReaderCharger(f, kv, "att:0:ab")
 	c.affiliateKey, _ = affiliateConfig(func(string) string { return "" })
 	out := runReader(t, c, clk)
 	if out.approved || out.reason != "no_affiliate_key" || len(f.checkouts) != 0 {
-		t.Fatalf("keyless build must decline no_affiliate_key with no checkout, got %+v (%d checkouts)", out, len(f.checkouts))
+		t.Fatalf("blank-key build must decline no_affiliate_key with no checkout, got %+v (%d checkouts)", out, len(f.checkouts))
 	}
 }
 

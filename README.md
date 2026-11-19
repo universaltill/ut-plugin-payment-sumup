@@ -49,9 +49,8 @@ real ones:
 - **Merchant code** (`sumup_merchant_code`) — the merchant's SumUp merchant code.
 - **No affiliate key setting (since v1.9.0, ut-docs#6659).** Universal Till's
   own integrator/affiliate key (**not** merchant-specific) is built into the
-  plugin at release time (see "What's still manual" and "Build"). A build
-  without it (CI, local) declines every reader payment (`no_affiliate_key`)
-  and sends nothing to SumUp.
+  plugin source (`src/affiliate.go`, a hard-coded constant since v1.9.1: it is
+  not a secret, it only attributes transactions to the affiliate account).
 - **Affiliate app ID** (`sumup_app_id`) — the application identifier (App ID / Bundle ID) the
   built-in affiliate key was created for. Default `com.universaltill.pos`. Not a
   secret; SumUp wants it sent together with the key. Change it only if told
@@ -190,14 +189,9 @@ units; reader ids are logged masked at most.
 
 The SumUp affiliate key is generated in the SumUp developer portal
 (Affiliate Keys) for the application identifier `com.universaltill.pos` and
-stored as the GitHub Actions secret `SUMUP_AFFILIATE_KEY` of this repository.
-`scripts/build.sh` links it into the module at release build time; it is
-never in the repo. Because the plugin is public, the key is extractable from
-the released module; that was accepted by the owner on 2026-11-18
-(ut-docs#6659). SumUp requires it for card-present integrations; it is not an
-authorization mechanism. A tag or publish release fails when the secret is
-empty; a build without it declines reader payments with
-`no_affiliate_key`. Each merchant separately creates their own
+is a hard-coded constant in `src/affiliate.go` (owner decision 2026-11-19,
+ut-docs#6659; not a secret). A new key means a new constant and a new release.
+Each merchant separately creates their own
 `sumup_api_key` + `sumup_merchant_code` and pairs their own reader for
 `sumup_reader_id`.
 
@@ -340,14 +334,9 @@ run through `universal-till`'s actual `WasmRuntime.HandleEvent`.
 bash scripts/build.sh   # -> bin/plugin.wasm (GOOS=wasip1 GOARCH=wasm)
 ```
 
-The built-in affiliate key comes from the `SUMUP_AFFILIATE_KEY` environment
-variable (letters, digits, `_`, `.`, `-` only), linked in with
-`-X main.builtinAffiliateKey`. Unset builds a keyless module (reader payments
-decline `no_affiliate_key`). The script only prints `present`/`absent`, never
-the value. For sandbox checks build locally with the sandbox key
-(`SUMUP_AFFILIATE_KEY=<sandbox key> bash scripts/build.sh`); the sandbox key is
-separate from the live one. The release workflow requires the secret on tag and
-publish runs.
+The affiliate key is the constant in `src/affiliate.go`; the build has no key
+injection. For sandbox checks edit the constant locally and never commit it;
+the sandbox key is separate from the live one.
 
 ## Verification status (2026-11-17)
 
