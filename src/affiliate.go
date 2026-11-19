@@ -2,15 +2,18 @@ package main
 
 import "strings"
 
-// builtinAffiliateKey is Universal Till's SumUp affiliate key, set at link
-// time by scripts/build.sh (-ldflags "-X main.builtinAffiliateKey=...") from
-// the SUMUP_AFFILIATE_KEY build environment variable (ut-docs#6659). It is ""
-// in CI, PR and test builds: a keyless build declines every reader payment
-// with no_affiliate_key and sends nothing to SumUp. The value must never be
-// logged, echoed or committed.
-var builtinAffiliateKey string
+// universalTillAffiliateKey is Universal Till's SumUp affiliate key. It is NOT
+// a secret: it only attributes transactions to the affiliate account (owner
+// decision, 2026-11-19, ut-docs#6659), so it is a plain constant in source. A
+// new key means a new constant and a new release.
+const universalTillAffiliateKey = "sup_afk_WZUeAmqLiavIAMycWzM7aa7CQuTmLoS7"
 
-// affiliateKey returns the built-in key, trimmed ("" when keyless).
+// builtinAffiliateKey is the value affiliateKey() reads. It starts as the
+// constant; tests override it to exercise the blank-key decline path.
+var builtinAffiliateKey = universalTillAffiliateKey
+
+// affiliateKey returns the built-in key, trimmed ("" only if the constant
+// were ever blanked: reader payments then decline no_affiliate_key).
 func affiliateKey() string { return strings.TrimSpace(builtinAffiliateKey) }
 
 // affiliateConfig is the affiliate pair a reader checkout sends to SumUp:
