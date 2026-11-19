@@ -33,7 +33,25 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Universal Till's SumUp affiliate key is built into the module
+      # (ut-docs#6659). A tag or publish release without it would ship a
+      # plugin whose every reader payment declines, so it fails here. The
+      # value is only tested for emptiness, never printed.
+      - name: Require affiliate key on tag or publish release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        env:
+          SUMUP_AFFILIATE_KEY: ${{ secrets.SUMUP_AFFILIATE_KEY }}
+        run: |
+          # Same trim as scripts/build.sh: a whitespace-only secret is empty.
+          key="${SUMUP_AFFILIATE_KEY#"${SUMUP_AFFILIATE_KEY%%[![:space:]]*}"}"
+          if [ -z "$key" ]; then
+            echo "ERROR: repository secret SUMUP_AFFILIATE_KEY is not set; a release without the built-in affiliate key would decline every reader payment (ut-docs#6659)" >&2
+            exit 1
+          fi
+
       - name: Build WASI module
+        env:
+          SUMUP_AFFILIATE_KEY: ${{ secrets.SUMUP_AFFILIATE_KEY }}
         run: scripts/build.sh
 
       - name: Validate manifest + plugin manifest

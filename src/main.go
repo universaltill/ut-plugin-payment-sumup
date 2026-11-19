@@ -26,7 +26,8 @@
 //
 // Config (plugin settings): `sumup_api_key` (merchant's own SumUp API key,
 // created in the SumUp developer portal), `sumup_merchant_code`,
-// `sumup_affiliate_key` (Universal Till's integrator key — see README),
+// the affiliate app id `sumup_app_id` (Universal Till's integrator key is
+// built in at release time, not a setting — see affiliate.go),
 // `currency` (a picker; default "auto" = the shop's currency, never a
 // silent eur for a UK shop), and optional `sumup_reader_id` (paired
 // reader id, register-scoped).
@@ -406,10 +407,10 @@ func main() {
 	if merchantCode == "" {
 		decline(amount, currency, "no_merchant_code")
 	}
+	affKey, appID := affiliateConfig(setting)
 	c := &readerCharger{
 		api: hostSumUp{apiKey: apiKey}, clk: realClock{}, kv: pluginKV,
-		affiliateKey: strings.TrimSpace(setting("sumup_affiliate_key")),
-		appID:        strings.TrimSpace(setting("sumup_app_id")),
+		affiliateKey: affKey, appID: appID,
 		merchantCode: merchantCode, currency: currency, readerID: readerID,
 		requestID: ev.ID, amount: amount, start: start,
 	}

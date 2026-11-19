@@ -47,14 +47,15 @@ real ones:
 - **API key** (`sumup_api_key`) — the merchant's own SumUp API key (created in the SumUp
   developer portal, one key per merchant — nothing hardcoded).
 - **Merchant code** (`sumup_merchant_code`) — the merchant's SumUp merchant code.
-- **Affiliate key** (`sumup_affiliate_key`) — Universal Till's own integrator/affiliate key
-  (**not** merchant-specific — see "What's still manual" below). Required
-  for the reader flow only; without it a reader payment is refused
-  (`no_affiliate_key`) and nothing is sent to SumUp.
+- **No affiliate key setting (since v1.9.0, ut-docs#6659).** Universal Till's
+  own integrator/affiliate key (**not** merchant-specific) is built into the
+  plugin at release time (see "What's still manual" and "Build"). A build
+  without it (CI, local) declines every reader payment (`no_affiliate_key`)
+  and sends nothing to SumUp.
 - **Affiliate app ID** (`sumup_app_id`) — the application identifier (App ID / Bundle ID) the
-  affiliate key was created for. Default `com.universaltill.pos`. Not a
-  secret; SumUp wants it sent together with the key. Change it only if the
-  key was registered for a different identifier.
+  built-in affiliate key was created for. Default `com.universaltill.pos`. Not a
+  secret; SumUp wants it sent together with the key. Change it only if told
+  to by Universal Till.
 - **Card payment currency** (`currency`) — a picker (symbol + code + name; labels in EN/DE/TR). Default
   **Automatic**: the shop's own currency, read from the till through the core
   read view `shop.context.v2` (`view:shop` permission; the manifest asks for
@@ -66,7 +67,9 @@ real ones:
   setting to Automatic) - but only while the view is readable; if the
   operator denies `view:shop` the old explicit `eur` is used as before.
 - **Card reader ID** (`sumup_reader_id`) (register-scoped) — the paired reader this specific till
-  drives. Leave unset for demo mode.
+  drives. Required for card payments: with no reader id and Test mode off
+  (`sumup_test_mode`) a payment is declined `no_reader`; demo behaviour needs
+  Test mode switched on.
 
 ## Currencies
 
@@ -185,13 +188,16 @@ units; reader ids are logged masked at most.
 
 ## What's still manual
 
-The SumUp affiliate key (`sumup_affiliate_key`) is generated in the SumUp
-developer portal (Affiliate Keys) for the application identifier
-`com.universaltill.pos`, then entered per till in the plugin settings (the
-settings screen, never a file or the repo: a key inside a public plugin build
-is readable by anyone). SumUp requires it for card-present integrations; it
-is not an authorization mechanism. Until it is set, reader payments are
-refused with `no_affiliate_key`. Each merchant separately creates their own
+The SumUp affiliate key is generated in the SumUp developer portal
+(Affiliate Keys) for the application identifier `com.universaltill.pos` and
+stored as the GitHub Actions secret `SUMUP_AFFILIATE_KEY` of this repository.
+`scripts/build.sh` links it into the module at release build time; it is
+never in the repo. Because the plugin is public, the key is extractable from
+the released module; that was accepted by the owner on 2026-11-18
+(ut-docs#6659). SumUp requires it for card-present integrations; it is not an
+authorization mechanism. A tag or publish release fails when the secret is
+empty; a build without it declines reader payments with
+`no_affiliate_key`. Each merchant separately creates their own
 `sumup_api_key` + `sumup_merchant_code` and pairs their own reader for
 `sumup_reader_id`.
 
@@ -333,6 +339,15 @@ run through `universal-till`'s actual `WasmRuntime.HandleEvent`.
 ```sh
 bash scripts/build.sh   # -> bin/plugin.wasm (GOOS=wasip1 GOARCH=wasm)
 ```
+
+The built-in affiliate key comes from the `SUMUP_AFFILIATE_KEY` environment
+variable (letters, digits, `_`, `.`, `-` only), linked in with
+`-X main.builtinAffiliateKey`. Unset builds a keyless module (reader payments
+decline `no_affiliate_key`). The script only prints `present`/`absent`, never
+the value. For sandbox checks build locally with the sandbox key
+(`SUMUP_AFFILIATE_KEY=<sandbox key> bash scripts/build.sh`); the sandbox key is
+separate from the live one. The release workflow requires the secret on tag and
+publish runs.
 
 ## Verification status (2026-11-17)
 
