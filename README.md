@@ -300,6 +300,18 @@ any live tip amount on a receipt as unconfirmed.
   success contract. Sandbox 2026-11-17: the refund answers 204 and shows as a
   separate history entry; the original transaction keeps `SUCCESSFUL`, so
   refund state must be read from the history, not from the original's status.
+  Units re-checked 2026-11-19 (ut-docs#6686): SumUp's OpenAPI-generated Go SDK
+  (`sumup/sumup-go`, synced from SumUp's spec) typed this endpoint's `amount`
+  as a float with no unit stated, like its sibling fields that are major
+  units (`amount`, `tip_amount`, `vat_amount`; refund `max_amount` "in major
+  units"), so we send 12.50 as `12.5`. In late April 2026 the spec dropped the
+  path for `POST /v1.0/merchants/{code}/payments/{id}/refunds`, whose `amount`
+  is an **integer in minor units** (`500` = EUR 5.00). The legacy path still
+  answered 204 to a full refund in the sandbox on 2026-11-17; no partial
+  refund has been sent there, so the partial-amount unit is inferred from the
+  schema. `src/refund_units_test.go` pins 12.50, a partial leg and a reversal.
+  Moving to v1.0 (needs the merchant code and payment id, integer minor units)
+  is ut-docs#6695.
 
 ## Test mode (setting `sumup_test_mode`, default off)
 
