@@ -1,8 +1,8 @@
 {
   "id": "com.universaltill.payment-sumup",
   "name": "SumUp Card Payments",
-  "version": "1.8.1",
-  "description": "Take card payments through SumUp. With a paired SumUp Solo reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert, and a tip the customer picks on the reader syncs back to the till automatically. With test mode switched on (sumup_test_mode) it runs in test mode: no card is charged and nothing is sent to SumUp (amounts ending .13 decline, .99 time out, anything else approves). Refunding a SumUp reader sale on the till refunds the original transaction automatically (a refund of a test-mode sale is approved with nothing to send back). Without a reader or with no API key a payment is declined, never approved as a test. Cards are charged in your shop's currency; the currency setting can pin it, and a choice that does not match the till's currency is declined rather than charged. Set your SumUp API key, merchant code, and (for reader payments) an affiliate key in the settings; the affiliate app id defaults to Universal Till's.",
+  "version": "1.9.0",
+  "description": "Take card payments through SumUp. With a paired SumUp Solo reader (set sumup_reader_id), the till drives the reader directly for a real card-present tap/insert, and a tip the customer picks on the reader syncs back to the till automatically. With test mode switched on (sumup_test_mode) it runs in test mode: no card is charged and nothing is sent to SumUp (amounts ending .13 decline, .99 time out, anything else approves). Refunding a SumUp reader sale on the till refunds the original transaction automatically (a refund of a test-mode sale is approved with nothing to send back). Without a reader or with no API key a payment is declined, never approved as a test. Cards are charged in your shop's currency; the currency setting can pin it, and a choice that does not match the till's currency is declined rather than charged. Set your SumUp API key and merchant code in the settings; Universal Till's own SumUp affiliate key is built in, and the affiliate app id defaults to Universal Till's.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
   "canonical_type": "payment",
@@ -46,14 +46,6 @@
       "scope": "global",
       "label": "payment_sumup.merchant_code.label",
       "help": "payment_sumup.merchant_code.help"
-    },
-    {
-      "key": "sumup_affiliate_key",
-      "default_value": "",
-      "scope": "global",
-      "type": "secret",
-      "label": "payment_sumup.affiliate_key.label",
-      "help": "payment_sumup.affiliate_key.help"
     },
     {
       "key": "sumup_app_id",
