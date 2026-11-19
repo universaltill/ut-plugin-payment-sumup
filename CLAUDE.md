@@ -21,7 +21,12 @@ a terminal status inside the till's 30 s gate (see the 2026-11-16 note below). R
 `{"amount": <major-unit decimal>}` — note the unit mismatch with the reader
 endpoint (minor vs. major units) is real, not a bug; SumUp's own API is
 inconsistent about this across endpoints, confirmed against
-developer.sumup.com. Refund success is a 204 (checked via the host's
+developer.sumup.com. Re-checked 2026-11-19 (ut-docs#6686, `src/refund_units_test.go`):
+the legacy schema types `amount` as a float with no unit stated (major units
+inferred from its sibling fields; only a full refund was sandbox-tested), and
+SumUp's spec dropped this path in late April 2026 for
+`/v1.0/merchants/{code}/payments/{id}/refunds` (integer minor units, other
+path params) — migration: ut-docs#6695. Refund success is a 204 (checked via the host's
 `status` field on the `http_request` response envelope — see
 `internal/plugins/wasm_hostfns.go` in `universal-till`, NOT an empty-body
 heuristic).
