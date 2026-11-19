@@ -319,18 +319,8 @@ func (c *readerCharger) lookup(clientTxn string) (*transactionPollEntry, bool) {
 // readerIdle reports whether the reader says it is ONLINE and IDLE (GET
 // .../readers/{id}/status). Anything else, or no answer, is "not idle".
 func (c *readerCharger) readerIdle() bool {
-	body, code, ok := c.api.call("GET", c.readerPath("status"), nil)
-	if !ok || code < 200 || code >= 300 {
-		return false
-	}
-	var st struct {
-		Data struct {
-			Status string `json:"status"`
-			State  string `json:"state"`
-		} `json:"data"`
-	}
-	_ = json.Unmarshal(body, &st)
-	return st.Data.Status == "ONLINE" && st.Data.State == "IDLE"
+	status, state, code, ok := readerStatus(c.api, c.merchantCode, c.readerID)
+	return ok && code >= 200 && code < 300 && status == "ONLINE" && state == "IDLE"
 }
 
 func firstNonEmpty(vals ...string) string {
