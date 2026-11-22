@@ -126,9 +126,9 @@ func refundLegs(api sumupAPI, kv kvStore, p eventPayload) (txnID, decline string
 			rec = old
 		}
 	}
-	save := func() {
+	save := func() error {
 		if p.EventID == "" {
-			return
+			return nil
 		}
 		anyOpen := false
 		for _, l := range rec.Legs {
@@ -137,10 +137,9 @@ func refundLegs(api sumupAPI, kv kvStore, p eventPayload) (txnID, decline string
 			}
 		}
 		if !anyOpen {
-			saveRefundRecord(kv, refundRecord{ID: p.EventID}) // nothing sent: forget it
-			return
+			return saveRefundRecord(kv, refundRecord{ID: p.EventID}) // nothing sent: forget it
 		}
-		saveRefundRecord(kv, rec)
+		return saveRefundRecord(kv, rec)
 	}
 	doneBefore := func(upTo int) bool {
 		for _, l := range rec.Legs[:upTo] {
@@ -167,7 +166,14 @@ func refundLegs(api sumupAPI, kv kvStore, p eventPayload) (txnID, decline string
 		}
 		resend := st == "sending"
 		rec.Legs[i].State = "sending"
-		save()
+		if err := save(); err != nil {
+			// Fail closed (ut-docs#6650): no record, no call.
+			rec.Legs[i].State = st
+			if doneBefore(i) {
+				return "", declineRefundPartial
+			}
+			return "", declineRefundStorage
+		}
 		done, tooLarge, reason := refundOne(api, l.Ref, l.Amount)
 		if done || (resend && tooLarge) { // resend: SumUp says nothing left = ours
 			rec.Legs[i].State = "done"

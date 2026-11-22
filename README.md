@@ -121,7 +121,10 @@ refund call has no idempotency key, so a refund sent for an event id is
 recorded (last 8): a repeat is answered from it, and a retry after a lost
 reply goes to the same transaction only and, if it was a partial refund,
 declines `refund_outcome_unknown` (check the SumUp dashboard) instead of
-risking paying twice (v1.6.0, ut-docs#6598).
+risking paying twice (v1.6.0, ut-docs#6598). If that record cannot be
+written, nothing is sent to SumUp and the refund declines
+`refund_storage_error` (`refund_partial` when an earlier leg of a split refund
+already went through); retry it once storage works (v1.9.2, ut-docs#6650).
 
 **Split-tender refunds (v1.7.0, ut-docs#6603).** When the original sale used
 two or more SumUp payments, the till sends each one's own `refund_amount`
