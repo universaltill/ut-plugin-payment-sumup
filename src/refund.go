@@ -44,6 +44,7 @@ const (
 	refundsKey           = "refunds"
 	maxRefundRecords     = 8
 	declineRefundUnknown = "refund_outcome_unknown"
+	declineRefundStorage = "refund_storage_error"
 )
 
 // refundRecord remembers a refund sent for one event id (ut-docs#6598).
@@ -73,7 +74,11 @@ func loadRefundRecords(kv kvStore) []refundRecord {
 }
 
 // saveRefundRecord upserts rec (newest last, bounded); state "" removes it.
-func saveRefundRecord(kv kvStore, rec refundRecord) {
+// It returns the storage error (also logged). Callers that write "sending"
+// before a money call must fail closed on it (ut-docs#6650); the ones that
+// write "done" or clear may ignore it: the call already happened or nothing
+// was sent.
+func saveRefundRecord(kv kvStore, rec refundRecord) error {
 	out := make([]refundRecord, 0, maxRefundRecords)
 	for _, o := range loadRefundRecords(kv) {
 		if o.ID != rec.ID {
@@ -87,9 +92,11 @@ func saveRefundRecord(kv kvStore, rec refundRecord) {
 		out = out[len(out)-maxRefundRecords:]
 	}
 	b, _ := json.Marshal(out)
-	if err := kv.put(refundsKey, b); err != nil {
+	err := kv.put(refundsKey, b)
+	if err != nil {
 		logf("sumup: could not save the refund record (%v); a retry of this refund may need the SumUp dashboard", err)
 	}
+	return err
 }
 
 // legTotal is what core says the original payment on ref took (0 = unknown).
@@ -156,7 +163,12 @@ func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnI
 			return "", "no_api_key"
 		}
 		if p.EventID != "" {
-			saveRefundRecord(kv, refundRecord{ID: p.EventID, Ref: id, State: "sending"})
+			// Fail closed: without the "sending" record a lost reply would be
+			// retried as a new refund (double refund, ut-docs#6650).
+			if err := saveRefundRecord(kv, refundRecord{ID: p.EventID, Ref: id, State: "sending"}); err != nil {
+				saveRefundRecord(kv, refundRecord{ID: p.EventID}) // best effort: no stale earlier candidate
+				return "", declineRefundStorage
+			}
 		}
 		done, tooLarge, reason := refundOne(api, id, p.Amount)
 		if done {
@@ -173,9 +185,13 @@ func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnI
 			}
 			return "", reason
 		}
-	}
-	if p.EventID != "" {
-		saveRefundRecord(kv, refundRecord{ID: p.EventID})
+		if p.EventID != "" {
+			// Definite "too large": nothing sent on id. Clear now, before the
+			// next candidate's "sending" save: a stale "sending" record on id
+			// would make a retry resend here, read "nothing left" as ours and
+			// approve with no money moved (ut-docs#6650 review F1).
+			saveRefundRecord(kv, refundRecord{ID: p.EventID})
+		}
 	}
 	return "", last
 }
