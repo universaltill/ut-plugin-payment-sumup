@@ -562,8 +562,9 @@ func TestRejectedStartClearsAttempt(t *testing.T) {
 	clk, f, kv := newWorld()
 	f.startRejected = true
 	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
-	if out.reason != "reader busy" {
-		t.Fatalf("reason = %q, want reader busy", out.reason)
+	// SumUp's free text is never the decline code (ut-docs#6961).
+	if out.reason != "reader_start_failed" {
+		t.Fatalf("reason = %q, want reader_start_failed", out.reason)
 	}
 	if rec, _ := findAttempt(kv, "att:0:ab"); rec.Ref != "" {
 		t.Fatalf("attempt Ref = %q after a rejected start, want empty", rec.Ref)

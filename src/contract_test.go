@@ -370,7 +370,7 @@ func TestContractReaderBusyIsRefusal(t *testing.T) {
 	if out.approved {
 		t.Fatal("approved while the reader was busy")
 	}
-	if out.reason != "There is a pending checkout for the device." && out.reason != "reader_start_failed" {
+	if out.reason != "reader_busy" {
 		t.Fatalf("reason = %q", out.reason)
 	}
 	if rec, found := findAttempt(kv, "att:0:ab"); found && rec.Ref != "" {
