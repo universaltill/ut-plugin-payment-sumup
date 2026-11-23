@@ -182,7 +182,6 @@ func (c *readerCharger) run() readerOutcome {
 		// Accept both: a wrong guess must not turn a started checkout into a
 		// "lost reply" decline.
 		FlatClientTransactionID string `json:"client_transaction_id"`
-		Message                 string `json:"message"`
 	}
 	if ok {
 		_ = json.Unmarshal(body, &checkout)
@@ -208,7 +207,9 @@ func (c *readerCharger) run() readerOutcome {
 	if status < 200 || status >= 300 {
 		// A definite refusal: nothing was started, so nothing to settle.
 		putAttempt(c.kv, attemptEntry{ID: c.requestID})
-		return refusedReader(firstNonEmpty(checkout.Message, "reader_start_failed"))
+		code, sumupType := readerStartDecline(status, body)
+		logReaderRefusal(status, code, sumupType)
+		return refusedReader(code)
 	}
 	putAttempt(c.kv, attemptEntry{ID: c.requestID, Ref: clientTxn, At: startedAt})
 

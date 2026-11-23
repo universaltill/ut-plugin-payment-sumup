@@ -126,6 +126,13 @@ written, nothing is sent to SumUp and the refund declines
 `refund_storage_error` (`refund_partial` when an earlier leg of a split refund
 already went through); retry it once storage works (v1.9.2, ut-docs#6650).
 
+**Reader start refusals (v1.10.0, ut-docs#6961).** When SumUp refuses to start a
+reader checkout, the sale declines with a specific code the till shows in
+plain words: `reader_busy` (another payment is pending on the reader; it clears
+within about 60 seconds), `reader_offline`, `no_reader`, `auth_failed`
+(credentials or merchant settings refused), otherwise `reader_start_failed`.
+Nothing is charged on any of them.
+
 **Split-tender refunds (v1.7.0, ut-docs#6603).** When the original sale used
 two or more SumUp payments, the till sends each one's own `refund_amount`
 (minor units). The plugin then refunds exactly that on each transaction, in

@@ -45,6 +45,7 @@ type fakeSumUp struct {
 	statusReads    int
 	startNetFail   bool // the checkout reaches the reader but the reply is lost
 	startRejected  bool
+	rejectBody     string        // overrides the default 422 body when startRejected
 	terminateFails bool          // terminate leaves a FAILED transaction (undocumented; off by default)
 	visibleAfter   time.Duration // listing lag after the tap
 	stuckState     string        // reader status state override (e.g. WAITING_FOR_CARD)
@@ -94,6 +95,9 @@ func (f *fakeSumUp) call(method, path string, body []byte) ([]byte, int, bool) {
 	switch {
 	case method == "POST" && strings.HasSuffix(path, "/checkout"):
 		if f.startRejected {
+			if f.rejectBody != "" {
+				return []byte(f.rejectBody), 422, true
+			}
 			return []byte(`{"message":"reader busy"}`), 422, true
 		}
 		f.checkoutBodies = append(f.checkoutBodies, body)
@@ -562,8 +566,23 @@ func TestRejectedStartClearsAttempt(t *testing.T) {
 	clk, f, kv := newWorld()
 	f.startRejected = true
 	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
-	if out.reason != "reader busy" {
-		t.Fatalf("reason = %q, want reader busy", out.reason)
+	// SumUp's free text is never the decline code (ut-docs#6961).
+	if out.reason != "reader_start_failed" {
+		t.Fatalf("reason = %q, want reader_start_failed", out.reason)
+	}
+	if rec, _ := findAttempt(kv, "att:0:ab"); rec.Ref != "" {
+		t.Fatalf("attempt Ref = %q after a rejected start, want empty", rec.Ref)
+	}
+}
+
+// The live nested READER_BUSY body through run(): reader_busy and no attempt left.
+func TestNestedReaderBusyThroughRun(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startRejected = true
+	f.rejectBody = `{"errors":{"type":"READER_BUSY","detail":"There is a pending checkout for the device."}}`
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if out.approved || out.reason != "reader_busy" {
+		t.Fatalf("got %+v, want declined reader_busy", out)
 	}
 	if rec, _ := findAttempt(kv, "att:0:ab"); rec.Ref != "" {
 		t.Fatalf("attempt Ref = %q after a rejected start, want empty", rec.Ref)
