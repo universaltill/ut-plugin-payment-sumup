@@ -26,6 +26,12 @@ func readerStartDecline(status int, body []byte) (code, sumupType string) {
 	if raw == "" {
 		raw = b.Type
 	}
+	// problem+json: "type" may be a URL (.../problem/reader-busy); keep the
+	// last path segment, dashes as underscores, upper case.
+	if i := strings.LastIndex(raw, "/"); i >= 0 {
+		raw = raw[i+1:]
+	}
+	raw = strings.ToUpper(strings.ReplaceAll(raw, "-", "_"))
 	sumupType = sanitizeType(raw)
 	if sumupType == "" {
 		sumupType = "none"
@@ -44,7 +50,7 @@ func readerStartDecline(status int, body []byte) (code, sumupType string) {
 		return "reader_busy", sumupType
 	case has("OFFLINE", "NOT_CONNECTED"):
 		return "reader_offline", sumupType
-	case has("AFFILIATE", "API_KEY", "UNAUTHORIZED", "FORBIDDEN", "MERCHANT"):
+	case has("AFFILIATE", "API_KEY", "UNAUTHORIZED", "FORBIDDEN") || t == "MERCHANT_MISMATCH":
 		return "auth_failed", sumupType
 	case t == "NOT_FOUND" || t == "READER_NOT_FOUND":
 		return "no_reader", sumupType
@@ -53,6 +59,9 @@ func readerStartDecline(status int, body []byte) (code, sumupType string) {
 	case status == 404:
 		return "no_reader", sumupType
 	case status == 409:
+		// Undocumented for this call. An "already started" 409 is ruled out:
+		// our foreign id includes the start second, so a repeat is never
+		// the same request.
 		return "reader_busy", sumupType
 	}
 	return "reader_start_failed", sumupType
