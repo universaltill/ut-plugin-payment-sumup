@@ -132,6 +132,7 @@ plain words: `reader_busy` (another payment is pending on the reader; it clears
 within about 60 seconds), `reader_offline`, `no_reader`, `auth_failed`
 (credentials or merchant settings refused), otherwise `reader_start_failed`.
 Nothing is charged on any of them.
+Only a 4xx counts as a refusal; any other non-2xx start reply (e.g. a 3xx) is treated like a lost reply: the reader is stopped and the sale looked up (v1.10.1, ut-docs#6987).
 
 **Split-tender refunds (v1.7.0, ut-docs#6603).** When the original sale used
 two or more SumUp payments, the till sends each one's own `refund_amount`

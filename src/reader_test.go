@@ -561,6 +561,72 @@ func TestServerErrorOnStartIsLookedUpLikeLostReply(t *testing.T) {
 	}
 }
 
+// A 3xx (e.g. a stopped redirect) is not a definite refusal either: the
+// checkout may have reached the reader, so it is stopped and the attempt
+// (Ref = foreign id) kept for the re-tap (ut-docs#6987). That the sale is
+// looked up by foreign id is proven by TestRedirectOnStartWithTapIsApproved,
+// which can only approve through that lookup.
+func TestRedirectOnStartIsNotADefiniteRefusal(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startStatus = 302
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if out.approved || out.reason != "network_error" {
+		t.Fatalf("want declined network_error, got %+v", out)
+	}
+	if f.terminates == 0 {
+		t.Fatal("reader not terminated after a 302 on start")
+	}
+	if want := "ut-att:0:ab-1700000000"; len(f.checkouts) != 1 || f.checkouts[0].foreignID != want {
+		t.Fatalf("checkouts = %+v, want one with foreign id %q", f.checkouts, want)
+	}
+	if rec, found := findAttempt(kv, "att:0:ab"); !found || rec.Ref != "ut-att:0:ab-1700000000" {
+		t.Fatalf("attempt = %+v found=%v, want Ref kept", rec, found)
+	}
+}
+
+// A 302 on start but the customer tapped: found by foreign id, approved.
+func TestRedirectOnStartWithTapIsApproved(t *testing.T) {
+	clk, f, kv := newWorld()
+	f.startStatus = 302
+	f.tapAt = 100 * time.Millisecond
+	out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+	if !out.approved || f.charged() != 1 {
+		t.Fatalf("want approved once, got %+v charged=%d", out, f.charged())
+	}
+}
+
+// The 4xx boundary (ut-docs#6987): 400 and 499 are definite refusals (attempt
+// cleared, no terminate); 100, 199, 300, 399, 500 and 600 take the lost-reply
+// path (terminate, attempt kept, network_error).
+func TestStartStatusBoundaryDecidesRefusalVersusLostReply(t *testing.T) {
+	cases := []struct {
+		status  int
+		refusal bool
+	}{
+		{100, false}, {199, false}, {300, false}, {399, false},
+		{400, true}, {499, true},
+		{500, false}, {600, false},
+	}
+	for _, tc := range cases {
+		clk, f, kv := newWorld()
+		f.startStatus = tc.status
+		out := runReader(t, newReaderCharger(f, kv, "att:0:ab"), clk)
+		rec, _ := findAttempt(kv, "att:0:ab")
+		if out.approved {
+			t.Fatalf("status %d: approved, want declined", tc.status)
+		}
+		if tc.refusal {
+			if out.reason != "reader_start_failed" || f.terminates != 0 || rec.Ref != "" {
+				t.Fatalf("status %d: want refusal (reader_start_failed, no terminate, attempt cleared), got %+v terminates=%d Ref=%q", tc.status, out, f.terminates, rec.Ref)
+			}
+			continue
+		}
+		if out.reason != "network_error" || f.terminates == 0 || rec.Ref != "ut-att:0:ab-1700000000" {
+			t.Fatalf("status %d: want lost-reply (network_error, terminate, Ref kept), got %+v terminates=%d Ref=%q", tc.status, out, f.terminates, rec.Ref)
+		}
+	}
+}
+
 // A definite 4xx refusal clears the pre-recorded attempt: nothing to settle.
 func TestRejectedStartClearsAttempt(t *testing.T) {
 	clk, f, kv := newWorld()

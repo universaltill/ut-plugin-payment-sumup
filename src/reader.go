@@ -187,11 +187,16 @@ func (c *readerCharger) run() readerOutcome {
 		_ = json.Unmarshal(body, &checkout)
 	}
 	clientTxn := firstNonEmpty(checkout.Data.ClientTransactionID, checkout.FlatClientTransactionID)
-	if !ok || status >= 500 || (status >= 200 && status < 300 && clientTxn == "") {
-		// No usable reply (transport failure, SumUp 5xx, a 2xx without an
-		// id): the request may still have reached the reader, which would
-		// prompt for a sale the till declines. Stop it and look the sale up
-		// by our foreign id; a tap that landed first is this sale's payment.
+	// Only a 4xx is a definite refusal. Any other non-2xx (1xx, 3xx such as a
+	// stopped redirect, 5xx, out-of-range) proves nothing about the reader.
+	definiteRefusal := ok && status >= 400 && status < 500
+	is2xx := status >= 200 && status < 300
+	if !ok || (!definiteRefusal && !is2xx) || (is2xx && clientTxn == "") {
+		// No usable reply (transport failure, any non-2xx that is not a
+		// 4xx, a 2xx without an id): the request may still have reached the
+		// reader, which would prompt for a sale the till declines. Stop it
+		// and look the sale up by our foreign id; a tap that landed first is
+		// this sale's payment.
 		// Nothing starts after hardDeadline (the host's gate is 30 s).
 		if c.elapsed()+pollInterval >= hardDeadline {
 			return refusedReader("network_error")
@@ -204,8 +209,8 @@ func (c *readerCharger) run() readerOutcome {
 		}
 		return refusedReader("network_error")
 	}
-	if status < 200 || status >= 300 {
-		// A definite refusal: nothing was started, so nothing to settle.
+	if definiteRefusal {
+		// A definite 4xx refusal: nothing was started, so nothing to settle.
 		putAttempt(c.kv, attemptEntry{ID: c.requestID})
 		code, sumupType := readerStartDecline(status, body)
 		logReaderRefusal(status, code, sumupType)
