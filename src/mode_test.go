@@ -36,20 +36,20 @@ func TestRefundRealRefGoesToAPIDemoRefDoesNot(t *testing.T) {
 	api := newLedger(0, map[string]int64{"txn-1": 1000})
 	kv, links := memKV{}, linkStore{blobs: newFakeBlobs()}
 	p := eventPayload{Amount: 400, EventID: "e1", OriginalPayments: []origPayment{{TransactionRef: "txn-1", Amount: 1000}}}
-	if _, r := refundSale(api, kv, links, p); r != "" || api.refunded["txn-1"] != 400 {
+	if _, r := refundSale(api, testMerchant, kv, links, p); r != "" || api.refunded["txn-1"] != 400 {
 		t.Fatalf("real ref: decline %q refunded %d", r, api.refunded["txn-1"])
 	}
 	d := eventPayload{Amount: 400, EventID: "e2", OriginalPayments: []origPayment{{TransactionRef: "demo-400", Amount: 400}}}
-	id, r := refundSale(api, kv, links, d)
+	id, r := refundSale(api, testMerchant, kv, links, d)
 	if r != "" || id != "demo-400" || len(api.bodies) != 1 {
 		t.Fatalf("demo ref: (%q,%q) api calls %d", id, r, len(api.bodies))
 	}
 	// no API key (nil api) and a demo ref still approves; a real ref declines.
-	if _, r := refundSale(nil, kv, links, d); r != "" {
+	if _, r := refundSale(nil, testMerchant, kv, links, d); r != "" {
 		t.Errorf("demo ref without key declined: %q", r)
 	}
 	p.EventID = "e3"
-	if _, r := refundSale(nil, kv, links, p); r != "no_api_key" {
+	if _, r := refundSale(nil, testMerchant, kv, links, p); r != "no_api_key" {
 		t.Errorf("real ref without key = %q, want no_api_key", r)
 	}
 }

@@ -455,7 +455,7 @@ func refundTxn(apiKey string, testMode bool, p eventPayload, currency string) {
 	if apiKey != "" {
 		api = hostSumUp{apiKey: apiKey}
 	}
-	id, reason := refundSale(api, pluginKV, pluginLinks, p)
+	id, reason := refundSale(api, strings.TrimSpace(setting("sumup_merchant_code")), pluginKV, pluginLinks, p)
 	if reason == declineUnknownOriginal && testMode {
 		approve(p.Amount, currency, "demo-refund") // test mode: nothing real to send back
 	}

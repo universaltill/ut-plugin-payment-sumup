@@ -120,7 +120,7 @@ func TestRefundIgnoresReaderIDOnLegs(t *testing.T) {
 		t.Fatalf("leg reader not parsed: %+v", ev.Payload.OriginalPayments)
 	}
 	api := newLedger(0, map[string]int64{"txn-1": 1000})
-	if _, r := refundSale(api, memKV{}, linkStore{blobs: newFakeBlobs()}, ev.Payload); r != "" || api.refunded["txn-1"] != 400 {
+	if _, r := refundSale(api, testMerchant, memKV{}, linkStore{blobs: newFakeBlobs()}, ev.Payload); r != "" || api.refunded["txn-1"] != 400 {
 		t.Fatalf("decline %q refunded %d", r, api.refunded["txn-1"])
 	}
 }

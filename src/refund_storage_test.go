@@ -28,7 +28,7 @@ func TestRefundStorageFailureWholeNotSent(t *testing.T) {
 	links := linkStore{blobs: newFakeBlobs()}
 	p := eventPayload{Amount: 3000, OriginalSaleID: "s", EventID: "e1",
 		OriginalPayments: []origPayment{leg("txn-A", 3000, 0, nil)}}
-	id, dec := refundSale(api, kv, links, p)
+	id, dec := refundSale(api, testMerchant, kv, links, p)
 	if id != "" || dec != declineRefundStorage || len(api.calls) != 0 {
 		t.Fatalf("id=%q dec=%q calls=%v", id, dec, api.calls)
 	}
@@ -40,7 +40,7 @@ func TestRefundStorageFailureLegsNotSent(t *testing.T) {
 	kv.failAll = true
 	links := linkStore{blobs: newFakeBlobs()}
 	p := lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000)))
-	id, dec := refundSale(api, kv, links, p)
+	id, dec := refundSale(api, testMerchant, kv, links, p)
 	if id != "" || dec != declineRefundStorage || len(api.calls) != 0 {
 		t.Fatalf("id=%q dec=%q calls=%v", id, dec, api.calls)
 	}
@@ -52,7 +52,7 @@ func TestRefundStorageFailureAfterFirstLegIsPartial(t *testing.T) {
 	kv := &flakyKV{capKV: newCapKV(), failAfterPuts: 2}
 	links := linkStore{blobs: newFakeBlobs()}
 	p := lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000)))
-	id, dec := refundSale(api, kv, links, p)
+	id, dec := refundSale(api, testMerchant, kv, links, p)
 	if id != "" || dec != declineRefundPartial || len(api.calls) != 1 || api.calls[0] != "txn-A" {
 		t.Fatalf("id=%q dec=%q calls=%v", id, dec, api.calls)
 	}
@@ -69,11 +69,11 @@ func TestRefundStorageFailureOnLaterCandidateNoFalseApproval(t *testing.T) {
 	links := linkStore{blobs: newFakeBlobs()}
 	p := eventPayload{Amount: 3000, OriginalSaleID: "s", EventID: "e1",
 		OriginalPayments: []origPayment{leg("txn-A", 3000, 0, nil), leg("txn-B", 3000, 0, nil)}}
-	if id, dec := refundSale(api, kv, links, p); id != "" || dec != declineRefundStorage || len(api.calls) != 1 {
+	if id, dec := refundSale(api, testMerchant, kv, links, p); id != "" || dec != declineRefundStorage || len(api.calls) != 1 {
 		t.Fatalf("first try: id=%q dec=%q calls=%v", id, dec, api.calls)
 	}
 	kv.match = "" // storage back
-	id, dec := refundSale(api, kv, links, p)
+	id, dec := refundSale(api, testMerchant, kv, links, p)
 	if dec == "" && api.refunded["txn-B"] != 3000 {
 		t.Fatalf("approved %q with no money moved: refunded=%v calls=%v", id, api.refunded, api.calls)
 	}

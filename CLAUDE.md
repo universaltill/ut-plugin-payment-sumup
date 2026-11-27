@@ -17,16 +17,13 @@ Reader flow: `POST /v0.1/merchants/{code}/readers/{id}/checkout` with
 the till's event payload amount is already minor units) + a top-level
 `affiliate{key}` object, then polls `GET
 /v2.1/merchants/{code}/transactions?client_transaction_id=…` once a second for
-a terminal status inside the till's 30 s gate (see the 2026-11-16 note below). Refund: `POST /v0.1/me/refund/{txn_id}` with
-`{"amount": <major-unit decimal>}` — note the unit mismatch with the reader
-endpoint (minor vs. major units) is real, not a bug; SumUp's own API is
-inconsistent about this across endpoints, confirmed against
-developer.sumup.com. Re-checked 2026-11-19 (ut-docs#6686, `src/refund_units_test.go`):
-the legacy schema types `amount` as a float with no unit stated (major units
-inferred from its sibling fields; only a full refund was sandbox-tested), and
-SumUp's spec dropped this path in late April 2026 for
-`/v1.0/merchants/{code}/payments/{id}/refunds` (integer minor units, other
-path params) — migration: ut-docs#6695. Refund success is a 204 (checked via the host's
+a terminal status inside the till's 30 s gate (see the 2026-11-16 note below). Refund (v1.11.0, ut-docs#6695): `POST /v1.0/merchants/{code}/payments/{id}/refunds` with
+`{"amount": <integer minor units>}`, same units as the reader endpoint; needs
+`sumup_merchant_code` (missing = decline `no_merchant_code`, no legacy fallback;
+unit-tested in `src/refund_units_test.go`). The retired `POST /v0.1/me/refund/{txn}`
+(major-unit float) is gone from the code. Whether `{id}` is the transaction `id` or
+`transaction_code` and a partial refund are NOT sandbox-verified yet (owner-run,
+README "Refund"). Refund success is any 2xx, 201 (checked via the host's
 `status` field on the `http_request` response envelope — see
 `internal/plugins/wasm_hostfns.go` in `universal-till`, NOT an empty-body
 heuristic).
@@ -40,11 +37,11 @@ switch (checking `amount % 100` as if it were a fresh charge) instead of
 being treated as "nothing real to refund, no-op approve"; fixed by handling
 `.refund` before the demo/reader branching, not inside it.
 
-**NOT verified against a live SumUp sandbox** (no credentials available at
-write time) — the reader-checkout affiliate-key JSON placement and the
-transactions-list response envelope are both best-effort against SumUp's
-public docs, flagged in code comments and the README. Verify both against a
-real merchant account before a live reader ships.
+**Sandbox status:** the reader checkout (affiliate placement), lookup and terminate
+were verified in the SumUp sandbox on 2026-11-17 (Virtual Solo only, see below and
+README); the transactions-list envelope, the tip field and the v1.0 refund are
+still unverified (flagged in code comments and the README). Verify them against
+a real merchant account before a live reader ships.
 
 **2026-08-01 — tip auto-sync (v1.1.0, ut-docs#43):** the reader flow now
 reports a tip back on the approve response's `tip_amount` field (integer
@@ -149,3 +146,5 @@ clears it. Sandbox 2026-11-17: the lookup by
 
 **Reader start refusals (v1.10.0, ut-docs#6961):** `src/readerdecline.go` (untagged, `readerdecline_test.go`). A definite 4xx on the reader checkout becomes a FIXED decline slug via `readerStartDecline(status, body)`, never SumUp text: type (nested `{errors:{type}}` or flat `{type}`; a problem+json URL type keeps its last path segment, `-` -> `_`; case-insensitive) `READER_BUSY` -> `reader_busy`; `*OFFLINE*`/`*NOT_CONNECTED*` -> `reader_offline`; `*AFFILIATE*`/`API_KEY`/`UNAUTHORIZED`/`FORBIDDEN`/exactly `MERCHANT_MISMATCH` or HTTP 401/403 -> `auth_failed`; `NOT_FOUND`/`READER_NOT_FOUND` or 404 -> `no_reader`; 409 -> `reader_busy`; else `reader_start_failed`. Known type beats status. A 404 carries no type, so a wrong merchant code also shows as `no_reader`. The till maps these codes to cashier text (no plugin locale strings); `outcome_unknown` is never used for a refusal. One log line: HTTP status + sanitised type only, never `detail`, body, key or ids.
 **Only 4xx is a refusal (v1.10.1, ut-docs#6987):** any other non-2xx on the checkout start (1xx/3xx/5xx/out of range) takes the lost-reply path (terminate, lookup by foreign id, attempt kept); only 400-499 clears the attempt and uses `readerStartDecline`.
+
+**Reconcile parsing (v1.11.0, ut-docs#6579):** `src/reconcile.go` (untagged, `reconcile_test.go`) has the pure payouts/history parsers and `buildReconcile` for ADR-0201's `payment.sumup.reconcile`; no event route, storage or HTTP yet (universal-till#6578). Decimals are parsed from text into minor units, never float64; a deduction is always negative; unmatched or inexact records go to `cannot_match`, 403 = `scope_missing`. Join: payout `transaction_code` -> history `id` (= `.authorize` ref). Fixtures are from the schema, not yet a sandbox merchant.
