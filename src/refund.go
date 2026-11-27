@@ -18,14 +18,24 @@ const declineUnknownOriginal = "unknown_original_payment"
 // to the next leg.
 func sumupTooLarge(status int) bool { return status == 409 || status == 422 }
 
-// refundOne asks SumUp to refund amount on one transaction.
-func refundOne(api sumupAPI, txnID string, amount int64) (done, tooLarge bool, reason string) {
-	reqBody, _ := json.Marshal(map[string]any{"amount": minorToMajor(amount)})
-	body, status, ok := api.call("POST", "/v0.1/me/refund/"+url.PathEscape(txnID), reqBody)
+// declineNoMerchantCode: the v1.0 refund endpoint needs the merchant code
+// (setting sumup_merchant_code). Never falls back to the retired legacy path.
+const declineNoMerchantCode = "no_merchant_code"
+
+// refundPath is SumUp's v1.0 payments refunds endpoint (ut-docs#6695).
+func refundPath(merchantCode, txnID string) string {
+	return "/v1.0/merchants/" + url.PathEscape(merchantCode) + "/payments/" + url.PathEscape(txnID) + "/refunds"
+}
+
+// refundOne asks SumUp to refund amount (integer minor units) on one
+// transaction.
+func refundOne(api sumupAPI, merchantCode, txnID string, amount int64) (done, tooLarge bool, reason string) {
+	reqBody, _ := json.Marshal(map[string]any{"amount": amount})
+	body, status, ok := api.call("POST", refundPath(merchantCode, txnID), reqBody)
 	if !ok {
 		return false, false, "network_error"
 	}
-	// The docs describe 204 No Content on success; treat any 2xx as success.
+	// The v1.0 endpoint answers 201 on success; treat any 2xx as success.
 	if status >= 200 && status < 300 {
 		return true, false, ""
 	}
@@ -121,9 +131,9 @@ func legTotal(p eventPayload, ref string) int64 {
 // that leg (SumUp then answering "nothing left" is our own refund); a partial
 // one cannot be told apart from a second refund, so it declines
 // refund_outcome_unknown rather than risk paying twice.
-func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnID, decline string) {
+func refundSale(api sumupAPI, merchantCode string, kv kvStore, links linkStore, p eventPayload) (txnID, decline string) {
 	if perLegMode(p) {
-		return refundLegs(api, kv, p)
+		return refundLegs(api, merchantCode, kv, p)
 	}
 	if p.EventID != "" {
 		for _, rec := range loadRefundRecords(kv) {
@@ -136,10 +146,13 @@ func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnI
 			if api == nil {
 				return "", "no_api_key"
 			}
+			if strings.TrimSpace(merchantCode) == "" {
+				return "", declineNoMerchantCode
+			}
 			if t := legTotal(p, rec.Ref); t == 0 || p.Amount < t {
 				return "", declineRefundUnknown
 			}
-			done, tooLarge, reason := refundOne(api, rec.Ref, p.Amount)
+			done, tooLarge, reason := refundOne(api, merchantCode, rec.Ref, p.Amount)
 			if done || tooLarge {
 				saveRefundRecord(kv, refundRecord{ID: p.EventID, Ref: rec.Ref, State: "done"})
 				return rec.Ref, ""
@@ -162,6 +175,9 @@ func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnI
 		if api == nil {
 			return "", "no_api_key"
 		}
+		if strings.TrimSpace(merchantCode) == "" {
+			return "", declineNoMerchantCode
+		}
 		if p.EventID != "" {
 			// Fail closed: without the "sending" record a lost reply would be
 			// retried as a new refund (double refund, ut-docs#6650).
@@ -170,7 +186,7 @@ func refundSale(api sumupAPI, kv kvStore, links linkStore, p eventPayload) (txnI
 				return "", declineRefundStorage
 			}
 		}
-		done, tooLarge, reason := refundOne(api, id, p.Amount)
+		done, tooLarge, reason := refundOne(api, merchantCode, id, p.Amount)
 		if done {
 			if p.EventID != "" {
 				saveRefundRecord(kv, refundRecord{ID: p.EventID, Ref: id, State: "done"})

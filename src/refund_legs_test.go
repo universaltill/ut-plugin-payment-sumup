@@ -22,13 +22,13 @@ func newLegFake(captured map[string]int64) *legFake {
 }
 
 func (f *legFake) call(method, path string, body []byte) ([]byte, int, bool) {
-	txn := strings.TrimPrefix(path, "/v0.1/me/refund/")
+	txn, _ := refundTxnFromPath(path)
 	f.calls = append(f.calls, txn)
 	if f.failNet[txn] {
 		return nil, 0, false
 	}
 	b, st, ok := f.ledgerSumUp.call(method, path, body)
-	if f.dropReply[txn] > 0 && st == 204 {
+	if f.dropReply[txn] > 0 && st == 201 {
 		f.dropReply[txn]--
 		return nil, 0, false
 	}
@@ -69,7 +69,7 @@ func TestLegsAbsentUnchanged(t *testing.T) {
 	api := newLegFake(map[string]int64{"txn-A": 3000, "txn-B": 2000})
 	kv, links := legEnv()
 	// two legs, no refund_amount: legacy big-first on ONE leg
-	id, dec := refundSale(api, kv, links, lp(2000, "e1", leg("txn-A", 3000, 0, nil), leg("txn-B", 2000, 0, nil)))
+	id, dec := refundSale(api, testMerchant, kv, links, lp(2000, "e1", leg("txn-A", 3000, 0, nil), leg("txn-B", 2000, 0, nil)))
 	if dec != "" || id != "txn-A" || api.refunded["txn-A"] != 2000 || api.refunded["txn-B"] != 0 {
 		t.Fatalf("id=%q dec=%q refunded=%v", id, dec, api.refunded)
 	}
@@ -78,8 +78,8 @@ func TestLegsAbsentUnchanged(t *testing.T) {
 func TestLegsSingleLegPartial(t *testing.T) {
 	api := newLegFake(map[string]int64{"txn-A": 3000})
 	kv, links := legEnv()
-	id, dec := refundSale(api, kv, links, lp(1500, "e1", leg("txn-A", 3000, 0, ra(1500))))
-	if dec != "" || id != "txn-A" || len(api.bodies) != 1 || api.bodies[0] != `{"amount":15}` {
+	id, dec := refundSale(api, testMerchant, kv, links, lp(1500, "e1", leg("txn-A", 3000, 0, ra(1500))))
+	if dec != "" || id != "txn-A" || len(api.bodies) != 1 || api.bodies[0] != `{"amount":1500}` {
 		t.Fatalf("id=%q dec=%q bodies=%v", id, dec, api.bodies)
 	}
 }
@@ -87,11 +87,11 @@ func TestLegsSingleLegPartial(t *testing.T) {
 func TestLegsTwoLegsEachOwnAmount(t *testing.T) {
 	api := newLegFake(map[string]int64{"txn-A": 3000, "txn-B": 2000})
 	kv, links := legEnv()
-	id, dec := refundSale(api, kv, links, lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000))))
+	id, dec := refundSale(api, testMerchant, kv, links, lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000))))
 	if dec != "" || id != "txn-A" {
 		t.Fatalf("id=%q dec=%q", id, dec)
 	}
-	if fmt.Sprint(api.calls) != "[txn-A txn-B]" || api.bodies[0] != `{"amount":30}` || api.bodies[1] != `{"amount":20}` {
+	if fmt.Sprint(api.calls) != "[txn-A txn-B]" || api.bodies[0] != `{"amount":3000}` || api.bodies[1] != `{"amount":2000}` {
 		t.Fatalf("calls=%v bodies=%v", api.calls, api.bodies)
 	}
 	if rec := loadRefundRecords(kv); len(rec) != 1 || rec[0].State != "done" || rec[0].Ref != "txn-A" || len(rec[0].Legs) != 2 {
@@ -104,12 +104,12 @@ func TestLegsSecondFailsThenRetry(t *testing.T) {
 	kv, links := legEnv()
 	lines := captureLog(t)
 	p := lp(5000, "e1", leg("txn-AAAA1111", 3000, 0, ra(3000)), leg("txn-BBBB2222", 2000, 0, ra(2000)))
-	_, dec := refundSale(api, kv, links, p)
+	_, dec := refundSale(api, testMerchant, kv, links, p)
 	if dec != declineRefundPartial {
 		t.Fatalf("dec=%q, want refund_partial", dec)
 	}
 	api.captured["txn-BBBB2222"] = 2000
-	id, dec := refundSale(api, kv, links, p)
+	id, dec := refundSale(api, testMerchant, kv, links, p)
 	if dec != "" || id != "txn-AAAA1111" {
 		t.Fatalf("retry id=%q dec=%q", id, dec)
 	}
@@ -126,7 +126,7 @@ func TestLegsSecondFailsThenRetry(t *testing.T) {
 		t.Errorf("leg A called %d times, want 1", nA)
 	}
 	// a different event id is a new refund (A is refundable no more here)
-	_, dec = refundSale(api, kv, links, lp(5000, "e2", p.OriginalPayments...))
+	_, dec = refundSale(api, testMerchant, kv, links, lp(5000, "e2", p.OriginalPayments...))
 	if dec == "" {
 		t.Errorf("different event id must not be deduped")
 	}
@@ -137,7 +137,7 @@ func TestLegsDefiniteFailureFirstLegStartsFresh(t *testing.T) {
 	api := newLegFake(map[string]int64{"txn-A": 100, "txn-B": 2000})
 	kv, links := legEnv()
 	p := lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000)))
-	_, dec := refundSale(api, kv, links, p)
+	_, dec := refundSale(api, testMerchant, kv, links, p)
 	if dec != "CONFLICT" {
 		t.Fatalf("dec=%q, want the leg's reason", dec)
 	}
@@ -154,10 +154,10 @@ func TestLegsSendingFullResend(t *testing.T) {
 	api.dropReply["txn-B"] = 1 // applied at SumUp, reply lost
 	kv, links := legEnv()
 	p := lp(5000, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(2000)))
-	if _, dec := refundSale(api, kv, links, p); dec != declineRefundPartial {
+	if _, dec := refundSale(api, testMerchant, kv, links, p); dec != declineRefundPartial {
 		t.Fatalf("dec=%q, want refund_partial", dec)
 	}
-	id, dec := refundSale(api, kv, links, p) // resend gets 409 "nothing left": ours
+	id, dec := refundSale(api, testMerchant, kv, links, p) // resend gets 409 "nothing left": ours
 	if dec != "" || id != "txn-A" || api.refunded["txn-B"] != 2000 || api.refunded["txn-A"] != 3000 {
 		t.Fatalf("id=%q dec=%q refunded=%v", id, dec, api.refunded)
 	}
@@ -168,11 +168,11 @@ func TestLegsSendingPartialUnknown(t *testing.T) {
 	api.dropReply["txn-B"] = 1
 	kv, links := legEnv()
 	p := lp(3500, "e1", leg("txn-A", 3000, 0, ra(3000)), leg("txn-B", 2000, 0, ra(500)))
-	if _, dec := refundSale(api, kv, links, p); dec != declineRefundPartial {
+	if _, dec := refundSale(api, testMerchant, kv, links, p); dec != declineRefundPartial {
 		t.Fatalf("dec=%q", dec)
 	}
 	n := len(api.calls)
-	_, dec := refundSale(api, kv, links, p)
+	_, dec := refundSale(api, testMerchant, kv, links, p)
 	if dec != declineRefundUnknown || len(api.calls) != n {
 		t.Fatalf("dec=%q, new calls=%d", dec, len(api.calls)-n)
 	}
@@ -186,7 +186,7 @@ func TestLegsRecordBoundedAndLegacyReadable(t *testing.T) {
 	kv, links := legEnv()
 	for i := 1; i <= 9; i++ {
 		p := lp(200, fmt.Sprintf("evt-%d", i), leg("txn-A", 1<<20, 0, ra(100)), leg("txn-B", 1<<20, 0, ra(100)))
-		if _, dec := refundSale(api, kv, links, p); dec != "" {
+		if _, dec := refundSale(api, testMerchant, kv, links, p); dec != "" {
 			t.Fatalf("event %d: %q", i, dec)
 		}
 	}
@@ -200,12 +200,12 @@ func TestLegsRecordBoundedAndLegacyReadable(t *testing.T) {
 	api = newLegFake(map[string]int64{"txn-A": 3000, "txn-B": 2000})
 	kv, links = legEnv()
 	kv[refundsKey] = `[{"id":"evt-1","ref":"txn-A","state":"done"}]`
-	id, dec := refundSale(api, kv, links, p)
+	id, dec := refundSale(api, testMerchant, kv, links, p)
 	if dec != "" || id != "txn-A" || len(api.calls) != 0 {
 		t.Fatalf("legacy done: id=%q dec=%q calls=%v", id, dec, api.calls)
 	}
 	kv[refundsKey] = `[{"id":"evt-1","ref":"txn-A","state":"sending"}]`
-	_, dec = refundSale(api, kv, links, p)
+	_, dec = refundSale(api, testMerchant, kv, links, p)
 	if dec != declineRefundUnknown || len(api.calls) != 0 {
 		t.Fatalf("legacy sending: dec=%q calls=%v", dec, api.calls)
 	}
@@ -255,7 +255,7 @@ func TestLegsInvalidNoCall(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			api := newLegFake(map[string]int64{"a": 1 << 30, "b": 1 << 30})
 			kv, links := legEnv()
-			_, dec := refundSale(api, kv, links, c.p)
+			_, dec := refundSale(api, testMerchant, kv, links, c.p)
 			if dec != c.want || len(api.calls) != 0 {
 				t.Fatalf("dec=%q want %q, calls=%v", dec, c.want, api.calls)
 			}
@@ -265,11 +265,11 @@ func TestLegsInvalidNoCall(t *testing.T) {
 
 func TestLegsDemoAndNoKey(t *testing.T) {
 	kv, links := legEnv()
-	id, dec := refundSale(nil, kv, links, lp(5000, "e1", leg("demo-1", 3000, 0, ra(3000)), leg("demo-2", 2000, 0, ra(2000))))
+	id, dec := refundSale(nil, testMerchant, kv, links, lp(5000, "e1", leg("demo-1", 3000, 0, ra(3000)), leg("demo-2", 2000, 0, ra(2000))))
 	if id != "demo-1" || dec != "" {
 		t.Fatalf("demo: %q %q", id, dec)
 	}
-	_, dec = refundSale(nil, kv, links, lp(5000, "e2", leg("txn-A", 3000, 0, ra(3000)), leg("demo-2", 2000, 0, ra(2000))))
+	_, dec = refundSale(nil, testMerchant, kv, links, lp(5000, "e2", leg("txn-A", 3000, 0, ra(3000)), leg("demo-2", 2000, 0, ra(2000))))
 	if dec != "no_api_key" {
 		t.Fatalf("dec=%q", dec)
 	}
@@ -280,8 +280,8 @@ func TestLegsReversalIgnoresRefundAmount(t *testing.T) {
 	kv, links := legEnv()
 	p := lp(900, "e1", leg("txn-H", 900, 0, ra(100)))
 	p.Reversal = true
-	id, dec := refundSale(api, kv, links, p)
-	if dec != "" || id != "txn-H" || len(api.bodies) != 1 || api.bodies[0] != `{"amount":9}` {
+	id, dec := refundSale(api, testMerchant, kv, links, p)
+	if dec != "" || id != "txn-H" || len(api.bodies) != 1 || api.bodies[0] != `{"amount":900}` {
 		t.Fatalf("id=%q dec=%q bodies=%v", id, dec, api.bodies)
 	}
 }
@@ -292,9 +292,9 @@ func TestLegsLogsMasked(t *testing.T) {
 	kv, links := legEnv()
 	p := lp(5000, "e1", leg("txn-AAAA1111", 3000, 0, ra(3000)), leg("txn-BBBB2222", 2000, 0, ra(2000)))
 	api.failNet["txn-BBBB2222"] = true
-	refundSale(api, kv, links, p)
+	refundSale(api, testMerchant, kv, links, p)
 	api.failNet["txn-BBBB2222"] = false
-	refundSale(api, kv, links, p)
+	refundSale(api, testMerchant, kv, links, p)
 	if len(*lines) == 0 {
 		t.Fatal("expected log lines")
 	}
@@ -315,11 +315,11 @@ func TestLegsRecordMismatchUnknown(t *testing.T) {
 			api := newLegFake(map[string]int64{"txn-A": 3000, "txn-B": 2000, "txn-C": 2000})
 			api.failNet["txn-B"] = true // A done, B left "sending"
 			kv, links := legEnv()
-			if _, dec := refundSale(api, kv, links, stored); dec != declineRefundPartial {
+			if _, dec := refundSale(api, testMerchant, kv, links, stored); dec != declineRefundPartial {
 				t.Fatalf("setup dec=%q", dec)
 			}
 			before, n := kv[refundsKey], len(api.calls)
-			if _, dec := refundSale(api, kv, links, p); dec != declineRefundUnknown || len(api.calls) != n {
+			if _, dec := refundSale(api, testMerchant, kv, links, p); dec != declineRefundUnknown || len(api.calls) != n {
 				t.Fatalf("dec=%q new calls=%d", dec, len(api.calls)-n)
 			}
 			if kv[refundsKey] != before {
@@ -336,7 +336,7 @@ func TestLegsSumOverflowGuard(t *testing.T) {
 	p := lp(-big, "e", leg("a", big, 0, ra(big)), leg("b", big, 0, ra(big)), leg("c", big, 0, ra(big)))
 	api := newLegFake(map[string]int64{})
 	kv, links := legEnv()
-	if _, dec := refundSale(api, kv, links, p); dec != declineInvalidRefundAmount || len(api.calls) != 0 {
+	if _, dec := refundSale(api, testMerchant, kv, links, p); dec != declineInvalidRefundAmount || len(api.calls) != 0 {
 		t.Fatalf("dec=%q calls=%v", dec, api.calls)
 	}
 }

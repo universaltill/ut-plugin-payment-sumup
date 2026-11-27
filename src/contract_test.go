@@ -168,15 +168,15 @@ func (s *sandboxServer) handler(w http.ResponseWriter, r *http.Request) {
 			"id": s.txnID, "status": s.final, "amount": float64(s.amount) / 100,
 			"currency": "GBP", "foreign_transaction_id": s.foreignID, "payment_type": "POS",
 		})
-	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v0.1/me/refund/"):
-		id := strings.TrimPrefix(r.URL.Path, "/v0.1/me/refund/")
+	case r.Method == "POST" && strings.HasPrefix(r.URL.Path, "/v1.0/merchants/"+cMerchant+"/payments/") && strings.HasSuffix(r.URL.Path, "/refunds"):
+		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.0/merchants/"+cMerchant+"/payments/"), "/refunds")
 		if id != s.txnID || s.final != "SUCCESSFUL" {
 			reply(404, map[string]any{"error_code": "NOT_FOUND"})
 			return
 		}
 		s.refunds = append(s.refunds, id)
 		s.history = append(s.history, "REFUND "+id) // a separate entry; the original stays SUCCESSFUL
-		w.WriteHeader(204)
+		w.WriteHeader(201)
 	default:
 		reply(404, map[string]any{"error_code": "NOT_FOUND"})
 	}
@@ -382,7 +382,7 @@ func TestContractReaderBusyIsRefusal(t *testing.T) {
 }
 
 // Refund: 204, a SEPARATE refund entry, the original keeps SUCCESSFUL, so
-// the plugin must trust the 204 and never read refund state from the
+// the plugin must trust the 2xx (201) and never read refund state from the
 // original's status.
 func TestContractRefundIsSeparateEntry(t *testing.T) {
 	s, clk, _, mk := contractWorld(t)
@@ -392,7 +392,7 @@ func TestContractRefundIsSeparateEntry(t *testing.T) {
 	if !out.approved {
 		t.Fatalf("setup: %+v", out)
 	}
-	done, tooLarge, reason := refundOne(c.api, out.authCode, 100)
+	done, tooLarge, reason := refundOne(c.api, cMerchant, out.authCode, 100)
 	if !done || tooLarge || reason != "" {
 		t.Fatalf("refund = %v %v %q, want done", done, tooLarge, reason)
 	}
@@ -400,15 +400,13 @@ func TestContractRefundIsSeparateEntry(t *testing.T) {
 		t.Fatalf("server refunds %v history %v", s.refunds, s.history)
 	}
 	last := s.requests[len(s.requests)-1]
-	if last.method != "POST" || last.path != "/v0.1/me/refund/"+out.authCode {
+	if last.method != "POST" || last.path != "/v1.0/merchants/"+cMerchant+"/payments/"+out.authCode+"/refunds" {
 		t.Fatalf("refund request = %s %s", last.method, last.path)
 	}
-	// {"amount": <major units>} is SumUp's documented partial-refund body; the
-	// sandbox record only proves {} (full refund) answers 204, so the amount
-	// form is documented, not sandbox-verified (ut-docs#6561).
-	var body map[string]any
-	if err := json.Unmarshal(last.body, &body); err != nil || body["amount"] != float64(1) {
-		t.Fatalf("refund body %s: want major-unit amount 1", last.body)
+	// v1.0 body: {"amount": <integer minor units>}; 100 minor = 1.00. Not
+	// sandbox-verified yet (ut-docs#6695 item 5): documented, owner-gated proof.
+	if string(last.body) != `{"amount":100}` {
+		t.Fatalf("refund body %s: want {\"amount\":100} (integer minor units)", last.body)
 	}
 	// The original, read again, is still SUCCESSFUL: not a signal of refund state.
 	b, code, _ := c.api.call("GET", "/v2.1/merchants/"+cMerchant+"/transactions?foreign_transaction_id=ut-att%3A0%3Aab-1700000000", nil)
@@ -420,7 +418,7 @@ func TestContractRefundIsSeparateEntry(t *testing.T) {
 func TestContractRefundOfUnknownTransactionDeclines(t *testing.T) {
 	_, _, _, mk := contractWorld(t)
 	c := mk("att:0:ab")
-	done, tooLarge, reason := refundOne(c.api, "TNOPE", 100)
+	done, tooLarge, reason := refundOne(c.api, cMerchant, "TNOPE", 100)
 	if done || tooLarge || reason != "NOT_FOUND" {
 		t.Fatalf("got %v %v %q, want declined NOT_FOUND", done, tooLarge, reason)
 	}

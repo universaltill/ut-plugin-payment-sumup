@@ -93,19 +93,19 @@ func (f *fakeBlobs) put(name string, b []byte) error {
 }
 
 // refundAPI records SumUp refund calls. answers maps a transaction id to a
-// scripted HTTP status (default 204).
+// scripted HTTP status (default 201).
 type refundAPI struct {
 	calls   []string
 	answers map[string]int
 }
 
 func (r *refundAPI) call(method, path string, body []byte) ([]byte, int, bool) {
-	txn := strings.TrimPrefix(path, "/v0.1/me/refund/")
+	txn, _ := refundTxnFromPath(path)
 	r.calls = append(r.calls, txn)
 	if st, ok := r.answers[txn]; ok {
 		return []byte(`{"error_code":"NOT_REFUNDABLE"}`), st, true
 	}
-	return nil, 204, true
+	return nil, 201, true
 }
 
 func (r *refundAPI) refundedPIs() []string { return r.calls }
@@ -139,7 +139,7 @@ func (w *refundWorld) authorize(id, ref string, amount, tip int64) {
 func (w *refundWorld) settle(p eventPayload) { settleSale(w.kv, w.links, p, w.now) }
 
 func (w *refundWorld) refund(api *refundAPI, p eventPayload) (string, string) {
-	return refundSale(api, w.kv, w.links, p)
+	return refundSale(api, testMerchant, w.kv, w.links, p)
 }
 
 // sellMany does authorize -> settle (current host: no host fields) n times.

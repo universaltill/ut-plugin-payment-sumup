@@ -81,7 +81,7 @@ real ones:
   shop whose till currency is one of them (or any currency not 2-decimal) is
   declined (`unsupported_currency` / `unsupported_decimals`). SumUp documents
   `minor_unit` 0 for those three; supporting them needs a currency-aware
-  divisor in `minorToMajor` (refunds use major units), the reader request and
+  divisor in `minorToMajor` (used for the tip), the reader request and
   the tip parser, plus agreement with the till's own decimals for them, none
   of which can be verified without a live SumUp sandbox. Money-critical, so
   not guessed; a later card can add them with tests.
@@ -112,9 +112,11 @@ real ones:
 ## Refunds
 
 Refunding a SumUp sale on the till refunds the original transaction
-automatically (`POST /v0.1/me/refund/{txn_id}`), looked up by the
+automatically (`POST /v1.0/merchants/{code}/payments/{id}/refunds`, body `{"amount": <integer minor units>}`, v1.11.0), looked up by the
 transaction id of the original sale (see "Finding the original transaction"
-below). A refund whose reference is
+below). It needs the `sumup_merchant_code` setting: without it a real refund
+declines `no_merchant_code` (nothing is sent, and the retired legacy path is
+never used as a fallback). A refund whose reference is
 not a `demo-` one always goes to SumUp, whatever the reader setting; a `demo-`
 reference (a test-mode sale) is approved with nothing to send back. SumUp's
 refund call has no idempotency key, so a refund sent for an event id is
@@ -306,23 +308,18 @@ any live tip amount on a receipt as unconfirmed.
   `CANCELLED`) and tip (`tip_amount`, see "Tips" above). **Needs sandbox
   verification**: the list response envelope (bare array vs. an `items`
   wrapper) wasn't confirmed; the plugin handles both defensively.
-- `POST /v0.1/me/refund/{txn_id}` — refund, confirmed request/response shape
-  including the major-unit decimal `amount` field and the 204-No-Content
-  success contract. Sandbox 2026-11-17: the refund answers 204 and shows as a
-  separate history entry; the original transaction keeps `SUCCESSFUL`, so
-  refund state must be read from the history, not from the original's status.
-  Units re-checked 2026-11-19 (ut-docs#6686): SumUp's OpenAPI-generated Go SDK
-  (`sumup/sumup-go`, synced from SumUp's spec) typed this endpoint's `amount`
-  as a float with no unit stated, like its sibling fields that are major
-  units (`amount`, `tip_amount`, `vat_amount`; refund `max_amount` "in major
-  units"), so we send 12.50 as `12.5`. In late April 2026 the spec dropped the
-  path for `POST /v1.0/merchants/{code}/payments/{id}/refunds`, whose `amount`
-  is an **integer in minor units** (`500` = EUR 5.00). The legacy path still
-  answered 204 to a full refund in the sandbox on 2026-11-17; no partial
-  refund has been sent there, so the partial-amount unit is inferred from the
-  schema. `src/refund_units_test.go` pins 12.50, a partial leg and a reversal.
-  Moving to v1.0 (needs the merchant code and payment id, integer minor units)
-  is ut-docs#6695.
+- `POST /v1.0/merchants/{code}/payments/{id}/refunds` — refund (v1.11.0,
+  ut-docs#6695), body `{"amount": <integer minor units>}` (`1250` = 12.50),
+  any 2xx (201) is success. **Not yet sandbox-verified** (owner-run, API only,
+  no reader): a full and a partial refund read back from the history, and
+  whether `{id}` is our stored `transaction_ref` (the transaction `id`) or its
+  `transaction_code`. Until then a 404 declines `refund_failed`; the plugin
+  never retries on the legacy path (it could refund twice). Earlier versions
+  sent `POST /v0.1/me/refund/{txn_id}` with a major-unit decimal (answered 204
+  in the sandbox 2026-11-17, full refund only); SumUp dropped it from its spec
+  in April 2026. A refund shows as a separate history entry; the original keeps
+  `SUCCESSFUL`, so refund state is read from the history. `src/refund_units_test.go`
+  pins 12.50, a partial leg, a reversal and a penny.
 
 ## Test mode (setting `sumup_test_mode`, default off)
 
@@ -358,3 +355,21 @@ substitute for a physical Solo. It came online only in a clean browser window
 pair and run all tests right after getting the pairing code. Still unverified: tips, the
 `client_transaction_id` poll's response envelope, and the live affiliate key
 on a live reader.
+
+## Settlement parsing for reconcile (ut-docs#6579)
+
+`src/reconcile.go` holds the pure functions behind a future
+`payment.sumup.reconcile` event (ADR-0201): `parsePayouts` (`GET
+/v1.0/merchants/{code}/payouts`, scope `payouts.read`), `parseHistoryPage`
+(`GET /v2.1/merchants/{code}/transactions/history`, with its `next` link) and
+`buildReconcile`, which joins them on `transaction_code` and returns
+`{lines, payouts, cannot_match}`. Money is parsed from the decimal text into
+signed integer minor units (never float64; a sub-penny amount is refused, not
+rounded); `12.50` with fee `0.19` is gross 1250, fee 19, net 1231. A line's
+`transaction_ref` is the history `id`, which is what `.authorize` returns.
+Refund, charge-back and other deduction records become `refund`, `chargeback`
+and `adjustment` lines, always negative. A payout record with no matching
+history, or an amount that is not exact, goes to `cannot_match`, never dropped.
+A 403 is `scope_missing` (the key needs `payouts.read`), never an empty result.
+No event route, storage or HTTP calls yet: the host side is universal-till#6578.
+Fixtures are from SumUp's published schema, not yet a sandbox merchant.
